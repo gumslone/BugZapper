@@ -89,7 +89,28 @@ class TestGuiSmoke(unittest.TestCase):
         self.assertEqual(len(app.action_btns), 5)
         for attr in ("lua_files", "upload_btn", "flash_btn", "monitor_btn"):
             self.assertTrue(hasattr(app, attr))
+        # Plain Tk root => drag-and-drop registration must report disabled, never
+        # raise (the Add… button is the fallback).
+        self.assertFalse(app.dnd_enabled)
         root.destroy()
+
+    def test_lua_add_paths_dedupes_and_skips_non_files(self):
+        import os
+        import tempfile
+        import tkinter as tk
+        root = tk.Tk()
+        app = flashui.FlasherApp(root)
+        with tempfile.TemporaryDirectory() as d:
+            f1 = os.path.join(d, "init.lua")
+            f2 = os.path.join(d, "app.lua")
+            open(f1, "w").close()
+            open(f2, "w").close()
+            missing = os.path.join(d, "nope.lua")
+            # f1 twice (dupe), a real file, a directory, a missing path.
+            app._lua_add_paths([f1, f1, f2, d, missing])
+            got = list(app.lua_files.get(0, "end"))
+        root.destroy()
+        self.assertEqual(got, [f1, f2])  # deduped; dir + missing skipped
 
 
 if __name__ == "__main__":

@@ -25,6 +25,19 @@ import queue
 import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox
 
+# Optional native file drag-and-drop (drag files from the OS file manager onto
+# the upload list). It needs the tkinterdnd2 package + its tkdnd Tcl binary,
+# which we deliberately do NOT bundle: tkdnd ships per-platform compiled libs,
+# which would break the pure-python / no-install / no-binaries guarantee. When
+# absent, the Add… button is the fallback. Enable with: pip install tkinterdnd2
+try:
+    from tkinterdnd2 import TkinterDnD, DND_FILES
+    DND_AVAILABLE = True
+except Exception:
+    TkinterDnD = None
+    DND_FILES = None
+    DND_AVAILABLE = False
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 # Bundled pure-python esptool + pyserial, so everything works with no install.
 VENDOR = os.path.join(HERE, "vendor")
@@ -248,9 +261,6 @@ class FlasherApp:
         nb.add(f, text="NodeMCU Lua")
         f.columnconfigure(0, weight=1)
 
-        ttk.Label(f, text="Lua / data files to upload to the NodeMCU filesystem:"
-                  ).grid(row=0, column=0, columnspan=2, sticky="w")
-
         listwrap = ttk.Frame(f)
         listwrap.grid(row=1, column=0, sticky="ew", pady=(4, 0))
         listwrap.columnconfigure(0, weight=1)
@@ -261,6 +271,13 @@ class FlasherApp:
                            command=self.lua_files.yview)
         sb.grid(row=0, column=1, sticky="ns")
         self.lua_files.configure(yscrollcommand=sb.set)
+
+        # Register drag-and-drop first, then word the label to match what's
+        # actually available (only promise "drag files" when it really works).
+        self.dnd_enabled = self._enable_file_dnd(self.lua_files)
+        label = "Lua / data files to upload to the NodeMCU filesystem"
+        label += " (drag files onto the list, or):" if self.dnd_enabled else ":"
+        ttk.Label(f, text=label).grid(row=0, column=0, columnspan=2, sticky="w")
 
         filebtns = ttk.Frame(f)
         filebtns.grid(row=1, column=1, sticky="n", padx=(6, 0))
@@ -343,14 +360,39 @@ class FlasherApp:
             self.firmware.set(path)
 
     def _lua_add(self):
-        paths = filedialog.askopenfilenames(
+        self._lua_add_paths(filedialog.askopenfilenames(
             initialdir=FW_DIR,
             filetypes=[("Lua / data", "*.lua *.lc *.html *.json *.txt"),
-                       ("All files", "*")])
+                       ("All files", "*")]))
+
+    def _lua_add_paths(self, paths):
+        """Append files to the upload list, skipping dupes and non-files (e.g. a
+        dropped folder). Shared by Add… and drag-and-drop."""
         existing = set(self.lua_files.get(0, "end"))
         for p in paths:
-            if p and p not in existing:
+            if p and p not in existing and os.path.isfile(p):
                 self.lua_files.insert("end", p)
+                existing.add(p)
+
+    def _enable_file_dnd(self, widget):
+        """Register widget as an OS file drop target when tkinterdnd2 is present
+        AND the root actually loaded tkdnd. Returns whether it took effect; the
+        Add… button is always the fallback. The drop_target_register call raises
+        (TclError if tkdnd isn't loaded, AttributeError on a plain Tk root), so a
+        runtime mismatch degrades quietly instead of breaking the tab."""
+        if not DND_AVAILABLE:
+            return False
+        try:
+            widget.drop_target_register(DND_FILES)
+            widget.dnd_bind("<<Drop>>", self._on_drop_files)
+            return True
+        except (tk.TclError, AttributeError):
+            return False
+
+    def _on_drop_files(self, event):
+        # event.data is a Tcl list; splitlist handles paths with spaces/braces.
+        self._lua_add_paths(self.root.tk.splitlist(event.data))
+        return event.action
 
     def _lua_remove(self):
         for i in reversed(self.lua_files.curselection()):
@@ -738,8 +780,21 @@ class FlasherApp:
         self.root.destroy()
 
 
+def make_root():
+    """A TkinterDnD root (enables file drop targets) when tkinterdnd2 and a
+    compatible tkdnd binary are both usable; a plain Tk root otherwise. Creating
+    the DnD root can fail at runtime (e.g. mismatched tkdnd) — fall back instead
+    of crashing on startup."""
+    if DND_AVAILABLE:
+        try:
+            return TkinterDnD.Tk()
+        except Exception:
+            pass
+    return tk.Tk()
+
+
 def main():
-    root = tk.Tk()
+    root = make_root()
     FlasherApp(root)
     root.mainloop()
 

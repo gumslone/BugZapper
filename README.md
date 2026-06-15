@@ -19,6 +19,10 @@ serial output in one place, so you don't need separate
   upload `init.lua` & data files into the device filesystem (compile, run, or
   restart after), list files, or format the filesystem. Uses the bundled
   [`nodemcu-uploader`](https://github.com/kmpm/nodemcu-uploader) — no install.
+  Add files with the **Add…** button, or — if `tkinterdnd2` is installed
+  (`pip install tkinterdnd2`) — **drag files** straight from your file manager
+  onto the list. (tkdnd ships compiled per-platform libs, so it's an optional
+  extra rather than bundled; the button is the always-available fallback.)
 - **CLI (`flash.py`, or `flash.sh` on Unix)** — the same flashing as a one-liner;
   version-robust across esptool 4.x/5.x.
 - **Drop-in** — auto-detects `./firmware/*.bin`; customize via env vars (below).
