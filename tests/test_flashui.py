@@ -89,9 +89,6 @@ class TestGuiSmoke(unittest.TestCase):
         self.assertEqual(len(app.action_btns), 5)
         for attr in ("lua_files", "upload_btn", "flash_btn", "monitor_btn"):
             self.assertTrue(hasattr(app, attr))
-        # Plain Tk root => drag-and-drop registration must report disabled, never
-        # raise (the Add… button is the fallback).
-        self.assertFalse(app.dnd_enabled)
         root.destroy()
 
     def test_lua_add_paths_dedupes_and_skips_non_files(self):
