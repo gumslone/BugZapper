@@ -64,6 +64,31 @@ class TestHelpers(unittest.TestCase):
             ["upload", "-c", "-e", "-r", "-v", "sha1"])
         self.assertNotIn("-v", flashui.nodemcu_upload_flags(verify="none"))
 
+    def test_files_in_folder_by_extension(self):
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            names = ["init.lua", "app.lua", "index.html", "data.json", "readme.md"]
+            for n in names:
+                open(os.path.join(d, n), "w").close()
+            os.mkdir(os.path.join(d, "sub"))  # dirs are ignored
+            open(os.path.join(d, "sub", "deep.lua"), "w").close()
+
+            def base(paths):
+                return sorted(os.path.basename(p) for p in paths)
+
+            # accepts bare / dotted / globbed extension spellings
+            self.assertEqual(base(flashui.files_in_folder(d, "lua")),
+                             ["app.lua", "init.lua"])
+            self.assertEqual(base(flashui.files_in_folder(d, "lua, html")),
+                             ["app.lua", "index.html", "init.lua"])
+            self.assertEqual(base(flashui.files_in_folder(d, "*.html .json")),
+                             ["data.json", "index.html"])
+            # '*' / empty => all top-level files, never recursing into sub/
+            self.assertEqual(base(flashui.files_in_folder(d, "*")), sorted(names))
+            self.assertEqual(base(flashui.files_in_folder(d, "")), sorted(names))
+            self.assertNotIn("deep.lua", base(flashui.files_in_folder(d, "lua")))
+
     def test_firmware_dir_env_override(self):
         old_argv, old_env = sys.argv, os.environ.get("BUGZAPPER_FW_DIR")
         try:

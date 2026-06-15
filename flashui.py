@@ -23,7 +23,7 @@ import sys
 import threading
 import queue
 import tkinter as tk
-from tkinter import ttk, filedialog, scrolledtext, messagebox
+from tkinter import ttk, filedialog, scrolledtext, messagebox, simpledialog
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # Bundled pure-python esptool + pyserial, so everything works with no install.
@@ -77,6 +77,21 @@ def list_ports():
 
 def list_firmware():
     return sorted(glob.glob(os.path.join(FW_DIR, "*.bin")))
+
+
+def files_in_folder(folder, exts):
+    """Top-level files in folder matching the given extensions. exts is a string
+    of space/comma-separated extensions in any form (lua, .lua, *.lua); empty or
+    a '*'/'all' token means every file. Not recursive — the NodeMCU filesystem is
+    flat, so pulling from subfolders would just flatten and collide."""
+    raw = [t.strip().lower() for t in re.split(r"[,\s]+", exts or "") if t.strip()]
+    files = sorted(p for p in glob.glob(os.path.join(folder, "*"))
+                   if os.path.isfile(p))
+    if not raw or "*" in raw or "*.*" in raw or "all" in raw:
+        return files
+    tokens = [t.lstrip("*").lstrip(".") for t in raw]  # *.lua / .lua / lua -> lua
+    return [p for p in files
+            if os.path.splitext(p)[1].lstrip(".").lower() in tokens]
 
 
 def tool_env():
@@ -264,9 +279,10 @@ class FlasherApp:
 
         filebtns = ttk.Frame(f)
         filebtns.grid(row=1, column=1, sticky="n", padx=(6, 0))
-        ttk.Button(filebtns, text="Add…", command=self._lua_add, width=8).pack(fill="x")
-        ttk.Button(filebtns, text="Remove", command=self._lua_remove, width=8).pack(fill="x", pady=4)
-        ttk.Button(filebtns, text="Clear", command=self._lua_clear, width=8).pack(fill="x")
+        ttk.Button(filebtns, text="Add…", command=self._lua_add, width=10).pack(fill="x")
+        ttk.Button(filebtns, text="Add folder…", command=self._lua_add_folder, width=10).pack(fill="x", pady=4)
+        ttk.Button(filebtns, text="Remove", command=self._lua_remove, width=10).pack(fill="x")
+        ttk.Button(filebtns, text="Clear", command=self._lua_clear, width=10).pack(fill="x", pady=(4, 0))
 
         opts = ttk.Frame(f)
         opts.grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
@@ -347,6 +363,25 @@ class FlasherApp:
             initialdir=FW_DIR,
             filetypes=[("Lua / data", "*.lua *.lc *.html *.json *.txt"),
                        ("All files", "*")]))
+
+    def _lua_add_folder(self):
+        """Add every file in a chosen folder matching one or more extensions
+        (e.g. 'lua html' to grab all .lua and .html files at once)."""
+        folder = filedialog.askdirectory(
+            initialdir=FW_DIR, title="Add all files from a folder")
+        if not folder:
+            return
+        exts = simpledialog.askstring(
+            "Add folder",
+            "Extensions to add (space/comma separated; * = all):",
+            initialvalue="lua html lc json txt", parent=self.root)
+        if exts is None:  # cancelled
+            return
+        paths = files_in_folder(folder, exts)
+        if not paths:
+            self._emit(f"! no matching files in {folder}\n")
+            return
+        self._lua_add_paths(paths)
 
     def _lua_add_paths(self, paths):
         """Append files to the upload list, skipping dupes and non-files."""
