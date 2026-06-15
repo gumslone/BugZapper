@@ -37,6 +37,19 @@ def list_ports():
     return sorted(p.device for p in comports())
 
 
+def build_flash_cmd(esptool, port, baud, mode, erase, fw):
+    """esptool write_flash argv. Short flags (-fm/-fs/-e) + write_flash work on
+    esptool 4.x and 5.x; --after is omitted because its default is a hard reset
+    in both (the long spelling differs: hard_reset vs hard-reset), so the device
+    still reboots into the new firmware."""
+    cmd = esptool + ["--port", port, "--baud", str(baud),
+                     "write_flash", "-fm", mode, "-fs", "detect"]
+    if erase:
+        cmd.append("-e")
+    cmd += ["0x0", fw]
+    return cmd
+
+
 def resolve_esptool():
     """A working esptool argv prefix, or None. Prefers the bundled pure-python
     esptool (no install); falls back to a system one. Tested by executing
@@ -110,15 +123,7 @@ def main():
     print(f"    port={port} baud={args.baud} mode={args.mode} "
           f"erase={'yes' if args.erase else 'no'}")
 
-    # Short flags (-fm/-fs/-e) + write_flash work on esptool 4.x and 5.x. --after
-    # is omitted: its default is a hard reset in both (the long spelling differs:
-    # hard_reset vs hard-reset), so the device still reboots into the new firmware.
-    cmd = esptool + ["--port", port, "--baud", str(args.baud),
-                     "write_flash", "-fm", args.mode, "-fs", "detect"]
-    if args.erase:
-        cmd.append("-e")
-    cmd += ["0x0", fw]
-
+    cmd = build_flash_cmd(esptool, port, args.baud, args.mode, args.erase, fw)
     rc = subprocess.run(cmd, env=tool_env()).returncode
     if rc == 0:
         print("==> Done. The device has been reset into the new firmware.")

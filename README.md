@@ -66,6 +66,23 @@ submodule** and call it via a thin wrapper that sets `BUGZAPPER_TITLE` /
 - The serial monitor uses the bundled `pyserial` (`serial.Serial`), so it works
   the same on Windows, macOS and Linux — no `stty`/`/dev` assumptions.
 
+## Tests
+
+Stdlib `unittest` — no install needed. Covers vendor integrity (the bundled
+tools execute, no compiled binaries), the CLI (command construction + help /
+list / error paths), the GUI helpers and a Tk build smoke test, and the
+pyserial read/write path via a pty loopback.
+
+```sh
+./run_tests.sh        # macOS / Linux (picks a tkinter python so GUI tests run)
+run_tests.bat         # Windows
+python3 -m unittest discover -s tests -p 'test_*.py' -v   # direct
+```
+
+Tests that need Tk or a serial pty skip cleanly where unavailable (e.g. headless
+or Windows), so the suite is green everywhere. CI runs it on Ubuntu, macOS and
+Windows ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)).
+
 ## Licenses
 
 BugZapper's own code is MIT (see [LICENSE](LICENSE)). Bundled in `vendor/`:

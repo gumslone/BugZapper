@@ -127,6 +127,22 @@ def resolve_nodemcu():
     return None
 
 
+def nodemcu_upload_flags(compile_lc=False, dofile=False, restart=False,
+                         verify="none"):
+    """The 'upload' subcommand + option flags for nodemcu-uploader, in the order
+    the GUI checkboxes map to (-c compile, -e run, -r restart, -v verify)."""
+    flags = ["upload"]
+    if compile_lc:
+        flags.append("-c")
+    if dofile:
+        flags.append("-e")
+    if restart:
+        flags.append("-r")
+    if verify and verify != "none":
+        flags += ["-v", verify]
+    return flags
+
+
 class FlasherApp:
     def __init__(self, root):
         self.root = root
@@ -686,16 +702,8 @@ class FlasherApp:
         cmd = self._nodemcu_cmd()
         if cmd is None:
             return
-        cmd += ["upload"]
-        if self.lua_compile.get():
-            cmd.append("-c")
-        if self.lua_dofile.get():
-            cmd.append("-e")
-        if self.lua_restart.get():
-            cmd.append("-r")
-        verify = self.lua_verify.get()
-        if verify and verify != "none":
-            cmd += ["-v", verify]
+        cmd += nodemcu_upload_flags(self.lua_compile.get(), self.lua_dofile.get(),
+                                    self.lua_restart.get(), self.lua_verify.get())
         cmd += files
         self._run_nodemcu(cmd, "\n==> Uploading %d file(s) to NodeMCU\n    %s\n"
                           % (len(files), " ".join(cmd)), "uploading…")
