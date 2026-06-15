@@ -1,40 +1,47 @@
 # ⚡ BugZapper
 
 A tiny, dependency-light flasher for **ESP8266 / ESP8285** boards — a GUI **and**
-a CLI — that flashes firmware *and* shows the serial output in one place, so you
-don't need separate [NodeMCU PyFlasher](https://github.com/marcelstoer/nodemcu-pyflasher)
+a CLI, on **Windows, macOS and Linux** — that flashes firmware *and* shows the
+serial output in one place, so you don't need separate
+[NodeMCU PyFlasher](https://github.com/marcelstoer/nodemcu-pyflasher)
 + [CoolTerm](https://freeware.the-meiers.org/) windows.
 
-- **No install needed** — a pure-python `esptool` + `pyserial` are bundled in
+- **No install needed** — pure-python `esptool` + `pyserial` are bundled in
   [`vendor/`](vendor); only `python3` is required (plus Tk for the GUI). A
   system `esptool` is used instead if one is on `PATH`.
-- **GUI (`bugzapper.sh`)** — pick port / firmware / baud / flash mode / erase,
-  flash, and a built-in serial monitor (ANSI colors, live baud switching,
-  send-to-serial, save / live-log to file). After a flash it reopens the monitor
-  to show the boot log — so no "port busy" clash.
+- **Cross-platform** — port detection and the serial monitor use the bundled
+  `pyserial`, so the same code runs on Windows (`COMx`), macOS and Linux.
+- **GUI (`bugzapper.sh` / `bugzapper.bat`)** — pick port / firmware / baud /
+  flash mode / erase, flash, and a built-in serial monitor (ANSI colors, live
+  baud switching, send-to-serial, save / live-log to file). After a flash it
+  reopens the monitor to show the boot log — so no "port busy" clash.
 - **NodeMCU Lua tab** (optional) — for boards running NodeMCU-Lua firmware,
   upload `init.lua` & data files into the device filesystem (compile, run, or
   restart after), list files, or format the filesystem. Uses the bundled
   [`nodemcu-uploader`](https://github.com/kmpm/nodemcu-uploader) — no install.
-- **CLI (`flash.sh`)** — the same flashing as a one-liner; version-robust across
-  esptool 4.x/5.x.
+- **CLI (`flash.py`, or `flash.sh` on Unix)** — the same flashing as a one-liner;
+  version-robust across esptool 4.x/5.x.
 - **Drop-in** — auto-detects `./firmware/*.bin`; customize via env vars (below).
 
 ## Use it
 
 ```sh
 # GUI
-./bugzapper.sh                 # lists ./firmware/*.bin
+./bugzapper.sh                 # macOS / Linux — lists ./firmware/*.bin
 ./bugzapper.sh path/to/bins    # or point it at a firmware folder
+bugzapper.bat                  # Windows (same args / env vars)
 
-# CLI
-./flash.sh                     # flash the first ./firmware/*.bin to the auto-found port
-./flash.sh -f build/app.bin -e # specific file, erase first
-./flash.sh -h                  # all options
+# CLI (cross-platform)
+python3 flash.py               # flash the first ./firmware/*.bin to the auto-found port
+python3 flash.py -f build/app.bin -e   # specific file, erase first
+python3 flash.py -p COM5 -b 460800     # explicit port (COMx on Windows) + baud
+python3 flash.py -h            # all options
+./flash.sh                     # macOS / Linux bash twin of flash.py
 ```
 
-Requirements: macOS or Linux, `python3`. For the GUI, Tk:
-`brew install python-tk@3.10` (any `python-tk` works).
+Requirements: `python3` on any of Windows / macOS / Linux. For the GUI you also
+need Tk — it ships with the python.org Windows/macOS installers; on Linux or
+Homebrew install it (`apt install python3-tk`, or `brew install python-tk@3.13`).
 
 ## Customize (no code edits)
 
@@ -46,17 +53,18 @@ Requirements: macOS or Linux, `python3`. For the GUI, Tk:
 
 ## Add to your project
 
-Copy `bugzapper.sh`, `flash.sh`, `flashui.py`, `vendor/` (and optionally
-`icon.png`) into the repo — or add it as a **git submodule** and call it via a
-thin wrapper that sets `BUGZAPPER_TITLE` / `BUGZAPPER_ICON` for your project.
+Copy `flashui.py`, `flash.py`, `bugzapper.sh`, `bugzapper.bat`, `flash.sh`,
+`vendor/` (and optionally `icon.png`) into the repo — or add it as a **git
+submodule** and call it via a thin wrapper that sets `BUGZAPPER_TITLE` /
+`BUGZAPPER_ICON` for your project.
 
 ## Notes
 
 - The bundled esptool is **2.8** (single-file, pure-python) — ideal for
   ESP8266/ESP8285. For newer ESP32 variants, install a current `esptool` on
   `PATH` and BugZapper will use it.
-- The serial monitor reads the port directly via `stty` + a file descriptor, so
-  `pyserial` isn't needed for monitoring.
+- The serial monitor uses the bundled `pyserial` (`serial.Serial`), so it works
+  the same on Windows, macOS and Linux — no `stty`/`/dev` assumptions.
 
 ## Licenses
 

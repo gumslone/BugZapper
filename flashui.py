@@ -3,10 +3,11 @@
 NodeMCU Lua files, and watch the serial output, in one window (no separate
 PyFlasher + CoolTerm + nodemcu-uploader).
 
-Launched by bugzapper.sh (which picks a python3 that has tkinter). Flashing uses
-the bundled esptool and the optional NodeMCU Lua tab uses the bundled
-nodemcu-uploader (both rely only on the bundled pyserial); the serial monitor
-opens the port directly (stty + fd read), so no pyserial is required for it.
+Launched by bugzapper.sh (macOS/Linux) or bugzapper.bat (Windows), which pick a
+python3 that has tkinter. Flashing uses the bundled esptool, the optional NodeMCU
+Lua tab uses the bundled nodemcu-uploader, and the serial monitor + port list use
+the bundled pyserial — all pure-python (no install) and cross-platform
+(Windows / macOS / Linux).
 
 Drop-in for any project. Customize without editing this file:
   BUGZAPPER_TITLE   window title            (default "BugZapper")
@@ -17,7 +18,6 @@ Drop-in for any project. Customize without editing this file:
 import glob
 import os
 import re
-import select
 import subprocess
 import sys
 import threading
@@ -26,8 +26,15 @@ import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-# Bundled pure-python esptool + pyserial, so flashing needs no local install.
+# Bundled pure-python esptool + pyserial, so everything works with no install.
 VENDOR = os.path.join(HERE, "vendor")
+# Put the bundled pyserial on the path so the GUI itself (port list + monitor)
+# can use it — this is what makes the monitor cross-platform (Win/macOS/Linux).
+if VENDOR not in sys.path:
+    sys.path.insert(0, VENDOR)
+import serial                                   # noqa: E402  (after sys.path setup)
+from serial.tools.list_ports import comports    # noqa: E402
+
 TITLE = os.environ.get("BUGZAPPER_TITLE", "BugZapper")
 ICON = os.environ.get("BUGZAPPER_ICON") or os.path.join(HERE, "icon.png")
 
@@ -47,9 +54,6 @@ FW_DIR = firmware_dir()
 BAUDS = ["9600", "57600", "74880", "115200", "230400", "460800", "921600"]
 MODES = ["dio", "qio", "dout"]
 LINE_ENDINGS = {"NL": "\n", "CR": "\r", "CR+NL": "\r\n", "None": ""}
-PORT_GLOBS = ("/dev/cu.usbserial*", "/dev/cu.SLAB*", "/dev/cu.wchusb*",
-              "/dev/cu.usbmodem*", "/dev/tty.usbserial*",
-              "/dev/ttyUSB*", "/dev/ttyACM*")
 
 # ANSI escape sequences (colors like \e[0;33m, cursor moves like \e[1A / \e[2K).
 # ANSI_RE strips them (used for the plain-text log file); ESC_RE splits them out
@@ -66,10 +70,9 @@ PALETTE = {30: "#666666", 31: "#cd3131", 32: "#0dbc79", 33: "#e5e510",
 
 
 def list_ports():
-    found = []
-    for pat in PORT_GLOBS:
-        found += glob.glob(pat)
-    return sorted(set(found))
+    """Serial ports across macOS / Linux / Windows, via pyserial (COMx on
+    Windows, /dev/* elsewhere)."""
+    return sorted(p.device for p in comports())
 
 
 def list_firmware():
@@ -132,7 +135,7 @@ class FlasherApp:
         self._set_icon()
 
         self.q = queue.Queue()
-        self.monitor_fd = None
+        self.monitor_ser = None  # open serial.Serial while the monitor runs
         self.monitor_stop = threading.Event()
         self.logfile = None  # open file handle when "Log to file" is active
         self._sgr_fg = None   # current ANSI foreground (None = default)
@@ -462,9 +465,9 @@ class FlasherApp:
             tags.append("bold")
         return tuple(tags)
 
-    # ---- serial monitor (stty + cat, no pyserial) ---------------------------
+    # ---- serial monitor (pyserial — cross-platform) ------------------------
     def _toggle_monitor(self):
-        if self.monitor_fd is not None:
+        if self.monitor_ser is not None:
             self._stop_monitor()
         else:
             self._start_monitor()
@@ -475,91 +478,71 @@ class FlasherApp:
             self._emit("! no serial port selected\n")
             return
         baud = self.baud.get()
-        # Open the port FIRST and keep it open, THEN set the baud. On macOS,
-        # (re)opening a serial device resets it to the default baud — so the
-        # old "stty …; cat" pattern read at the wrong rate (garbled text).
-        # Holding this fd open keeps stty's setting from being reset.
+        # pyserial opens the port and configures the baud atomically, holding the
+        # handle open — so the macOS "reopen resets baud" gotcha doesn't bite, and
+        # it works identically on Windows/Linux/macOS (no stty, no /dev assumptions).
         try:
-            fd = os.open(port, os.O_RDWR | os.O_NONBLOCK | os.O_NOCTTY)
-        except OSError as e:
-            self._emit(f"! could not open {port}: {e}\n")
+            ser = serial.Serial(port, int(baud), timeout=0.2)
+        except (serial.SerialException, ValueError, OSError) as e:
+            self._emit(f"! could not open {port} @ {baud}: {e}\n")
             return
-        try:
-            self._apply_baud(port, baud)
-        except (subprocess.CalledProcessError, OSError) as e:
-            os.close(fd)
-            self._emit(f"! could not configure {port} @ {baud}: {e}\n")
-            return
-        self.monitor_fd = fd
+        self.monitor_ser = ser
         self.monitor_stop.clear()
         self.monitor_btn.configure(text="■ Disconnect monitor")
         self._set_status(f"monitor @ {baud}", "#1FA67A")
         self._emit(f"--- monitor connected: {port} @ {baud} ---\n")
         self._emit("(a short gibberish burst at reset is the ESP boot ROM at "
                    "74880 baud; firmware output follows at the selected baud)\n")
-        threading.Thread(target=self._read_monitor, args=(fd,),
+        threading.Thread(target=self._read_monitor, args=(ser,),
                          daemon=True).start()
 
     def _send(self, *_):
-        if self.monitor_fd is None:
+        if self.monitor_ser is None:
             self._emit("! connect the monitor first to send\n")
             return
         msg = self.send_entry.get()
         ending = LINE_ENDINGS.get(self.line_ending.get(), "\n")
         try:
-            os.write(self.monitor_fd, (msg + ending).encode("utf-8"))
-        except OSError as e:
+            self.monitor_ser.write((msg + ending).encode("utf-8"))
+        except (serial.SerialException, OSError) as e:
             self._emit(f"! send failed: {e}\n")
             return
         self._emit(f">> {msg}\n")
         self.send_entry.delete(0, "end")
 
-    def _apply_baud(self, port, baud):
-        """Set the line baud on the (already open) port via stty."""
-        subprocess.run(["stty", "-f", port, baud, "cs8", "-cstopb",
-                        "-parenb", "raw", "-echo"], check=True,
-                       capture_output=True)
-
     def _on_baud_change(self, *_):
-        """Retune the live monitor without reconnecting. The port stays open, so
-        stty changes the rate in place and the reader keeps the same fd."""
-        if self.monitor_fd is None:
+        """Retune the live monitor without reconnecting — pyserial applies the
+        new baud to the already-open port in place."""
+        if self.monitor_ser is None:
             return
         baud = self.baud.get()
         try:
-            self._apply_baud(self.port.get(), baud)
-        except (subprocess.CalledProcessError, OSError) as e:
+            self.monitor_ser.baudrate = int(baud)
+        except (serial.SerialException, ValueError, OSError) as e:
             self._emit(f"! could not set baud {baud}: {e}\n")
             return
         self._set_status(f"monitor @ {baud}", "#1FA67A")
         self._emit(f"--- baud changed to {baud} ---\n")
 
-    def _read_monitor(self, fd):
+    def _read_monitor(self, ser):
         while not self.monitor_stop.is_set():
             try:
-                ready, _, _ = select.select([fd], [], [], 0.2)
-            except OSError:
-                break
-            if not ready:
-                continue
-            try:
-                data = os.read(fd, 512)
-            except BlockingIOError:
-                continue
-            except OSError:
-                break
-            if not data:  # EOF — device unplugged
-                break
-            self._emit(data.decode("utf-8", "replace"))
+                # read() returns after the timeout with whatever arrived (possibly
+                # empty); in_waiting drains the buffer without an extra wait.
+                data = ser.read(ser.in_waiting or 1)
+            except (serial.SerialException, OSError):
+                break  # device unplugged / port closed
+            if data:
+                self._emit(data.decode("utf-8", "replace"))
 
     def _stop_monitor(self):
         self.monitor_stop.set()
-        fd = self.monitor_fd
-        self.monitor_fd = None
-        if fd is not None:
+        ser = self.monitor_ser
+        self.monitor_ser = None
+        if ser is not None:
             try:
-                os.close(fd)
-            except OSError:
+                ser.close()
+            except (serial.SerialException, OSError):
                 pass
         self.monitor_btn.configure(text="▶ Connect monitor")
         self._set_status("ready")
@@ -572,7 +555,7 @@ class FlasherApp:
     def _begin_tool(self, status):
         """Free the port and lock the action buttons before running a tool.
         Returns True if the monitor was running, so it can be reopened after."""
-        was_monitoring = self.monitor_fd is not None
+        was_monitoring = self.monitor_ser is not None
         if was_monitoring:
             self._stop_monitor()
         self.busy = True
