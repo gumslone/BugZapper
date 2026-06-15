@@ -12,6 +12,10 @@ don't need separate [NodeMCU PyFlasher](https://github.com/marcelstoer/nodemcu-p
   flash, and a built-in serial monitor (ANSI colors, live baud switching,
   send-to-serial, save / live-log to file). After a flash it reopens the monitor
   to show the boot log — so no "port busy" clash.
+- **NodeMCU Lua tab** (optional) — for boards running NodeMCU-Lua firmware,
+  upload `init.lua` & data files into the device filesystem (compile, run, or
+  restart after), list files, or format the filesystem. Uses the bundled
+  [`nodemcu-uploader`](https://github.com/kmpm/nodemcu-uploader) — no install.
 - **CLI (`flash.sh`)** — the same flashing as a one-liner; version-robust across
   esptool 4.x/5.x.
 - **Drop-in** — auto-detects `./firmware/*.bin`; customize via env vars (below).
@@ -57,4 +61,5 @@ thin wrapper that sets `BUGZAPPER_TITLE` / `BUGZAPPER_ICON` for your project.
 ## Licenses
 
 BugZapper's own code is MIT (see [LICENSE](LICENSE)). Bundled in `vendor/`:
-`esptool` (GPLv2) and `pyserial` (BSD-3-Clause), each under its own license.
+`esptool` (GPLv2), `pyserial` (BSD-3-Clause), and `nodemcu-uploader` (MIT),
+each under its own license.

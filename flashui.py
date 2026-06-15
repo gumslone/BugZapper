@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""BugZapper — a small Tkinter GUI to flash ESP8266/ESP8285 firmware and watch
-the serial output, in one window (no separate PyFlasher + CoolTerm).
+"""BugZapper — a small Tkinter GUI to flash ESP8266/ESP8285 firmware, upload
+NodeMCU Lua files, and watch the serial output, in one window (no separate
+PyFlasher + CoolTerm + nodemcu-uploader).
 
 Launched by bugzapper.sh (which picks a python3 that has tkinter). Flashing uses
-the bundled esptool; the serial monitor opens the port directly (stty + fd
-read), so no pyserial is required.
+the bundled esptool and the optional NodeMCU Lua tab uses the bundled
+nodemcu-uploader (both rely only on the bundled pyserial); the serial monitor
+opens the port directly (stty + fd read), so no pyserial is required for it.
 
 Drop-in for any project. Customize without editing this file:
   BUGZAPPER_TITLE   window title            (default "BugZapper")
@@ -21,7 +23,7 @@ import sys
 import threading
 import queue
 import tkinter as tk
-from tkinter import ttk, filedialog, scrolledtext
+from tkinter import ttk, filedialog, scrolledtext, messagebox
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # Bundled pure-python esptool + pyserial, so flashing needs no local install.
@@ -74,9 +76,9 @@ def list_firmware():
     return sorted(glob.glob(os.path.join(FW_DIR, "*.bin")))
 
 
-def esptool_env():
-    """Env for running esptool: bundled pyserial on PYTHONPATH, and NO_COLOR
-    (we render/strip ANSI ourselves)."""
+def tool_env():
+    """Env for running the bundled tools (esptool, nodemcu-uploader): bundled
+    pyserial on PYTHONPATH, and NO_COLOR (we render/strip ANSI ourselves)."""
     pp = VENDOR
     if os.environ.get("PYTHONPATH"):
         pp += os.pathsep + os.environ["PYTHONPATH"]
@@ -97,7 +99,25 @@ def resolve_esptool():
     for cand in candidates:
         try:
             if subprocess.run(cand + ["version"], capture_output=True,
-                              env=esptool_env()).returncode == 0:
+                              env=tool_env()).returncode == 0:
+                return cand
+        except (FileNotFoundError, OSError):
+            continue
+    return None
+
+
+def resolve_nodemcu():
+    """Return a working nodemcu-uploader argv prefix, or None. Prefers the
+    bundled pure-python package in vendor/ (no install needed); falls back to a
+    system one. Tested by executing '--version' (mirrors resolve_esptool)."""
+    candidates = []
+    if os.path.isdir(os.path.join(VENDOR, "nodemcu_uploader")):
+        candidates.append([sys.executable, "-m", "nodemcu_uploader"])
+    candidates += [["nodemcu-uploader"], ["nodemcu-uploader.py"]]
+    for cand in candidates:
+        try:
+            if subprocess.run(cand + ["--version"], capture_output=True,
+                              env=tool_env()).returncode == 0:
                 return cand
         except (FileNotFoundError, OSError):
             continue
@@ -119,9 +139,13 @@ class FlasherApp:
         self._sgr_bold = False
         self.busy = False  # flashing in progress
 
-        self._build_controls()
+        self._build_header()
+        self._build_tabs()
         self._build_log()
         self._build_send()
+        # Action buttons disabled while an external tool (esptool / uploader) runs.
+        self.action_btns = [self.flash_btn, self.monitor_btn, self.upload_btn,
+                            self.lualist_btn, self.luaformat_btn]
         self._refresh_ports(select_first=True)
         self._refresh_firmware()
 
@@ -137,8 +161,9 @@ class FlasherApp:
             pass  # icon missing/unreadable — not fatal
 
     # ---- UI construction ----------------------------------------------------
-    def _build_controls(self):
-        f = ttk.Frame(self.root, padding=10)
+    def _build_header(self):
+        """Port + baud + monitor/log controls, shared by both tabs."""
+        f = ttk.Frame(self.root, padding=(10, 10, 10, 4))
         f.pack(fill="x")
         f.columnconfigure(1, weight=1)
 
@@ -147,41 +172,108 @@ class FlasherApp:
         self.port.grid(row=0, column=1, sticky="ew", padx=6)
         ttk.Button(f, text="Refresh", command=self._refresh_ports).grid(row=0, column=2)
 
-        ttk.Label(f, text="Firmware").grid(row=1, column=0, sticky="w", pady=3)
-        self.firmware = ttk.Combobox(f, width=34)
-        self.firmware.grid(row=1, column=1, sticky="ew", padx=6)
-        ttk.Button(f, text="Browse…", command=self._browse_fw).grid(row=1, column=2)
-
-        row2 = ttk.Frame(f)
-        row2.grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
-        ttk.Label(row2, text="Baud").pack(side="left")
-        self.baud = ttk.Combobox(row2, state="readonly", width=8, values=BAUDS)
+        row = ttk.Frame(f)
+        row.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(6, 0))
+        ttk.Label(row, text="Baud").pack(side="left")
+        self.baud = ttk.Combobox(row, state="readonly", width=8, values=BAUDS)
         self.baud.set("115200")
         self.baud.pack(side="left", padx=(4, 16))
         # retune a live monitor when the baud changes (e.g. 74880 boot ROM <-> 115200)
         self.baud.bind("<<ComboboxSelected>>", self._on_baud_change)
-        ttk.Label(row2, text="Flash mode").pack(side="left")
-        self.mode = ttk.Combobox(row2, state="readonly", width=6, values=MODES)
+        self.monitor_btn = ttk.Button(row, text="▶ Connect monitor",
+                                      command=self._toggle_monitor)
+        self.monitor_btn.pack(side="left")
+        ttk.Button(row, text="Clear log", command=self._clear).pack(side="left", padx=6)
+        ttk.Button(row, text="Save log…", command=self._save_log).pack(side="left")
+        self.logfile_btn = ttk.Button(row, text="● Log to file",
+                                      command=self._toggle_logfile)
+        self.logfile_btn.pack(side="left", padx=6)
+        self.status = ttk.Label(row, text="ready", foreground="#1FA67A")
+        self.status.pack(side="right")
+
+    def _build_tabs(self):
+        nb = ttk.Notebook(self.root)
+        nb.pack(fill="x", padx=10, pady=(4, 0))
+        self._build_flash_tab(nb)
+        self._build_upload_tab(nb)
+
+    def _build_flash_tab(self, nb):
+        f = ttk.Frame(nb, padding=10)
+        nb.add(f, text="Flash firmware")
+        f.columnconfigure(1, weight=1)
+
+        ttk.Label(f, text="Firmware").grid(row=0, column=0, sticky="w", pady=3)
+        self.firmware = ttk.Combobox(f, width=34)
+        self.firmware.grid(row=0, column=1, sticky="ew", padx=6)
+        ttk.Button(f, text="Browse…", command=self._browse_fw).grid(row=0, column=2)
+
+        row = ttk.Frame(f)
+        row.grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        ttk.Label(row, text="Flash mode").pack(side="left")
+        self.mode = ttk.Combobox(row, state="readonly", width=6, values=MODES)
         self.mode.set("dio")
         self.mode.pack(side="left", padx=(4, 16))
         self.erase = tk.BooleanVar(value=False)
-        ttk.Checkbutton(row2, text="Erase flash (wipes all data)",
+        ttk.Checkbutton(row, text="Erase flash (wipes all data)",
                         variable=self.erase).pack(side="left")
 
         btns = ttk.Frame(f)
-        btns.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+        btns.grid(row=2, column=0, columnspan=3, sticky="w", pady=(10, 0))
         self.flash_btn = ttk.Button(btns, text="⚡ Flash", command=self._flash)
         self.flash_btn.pack(side="left")
-        self.monitor_btn = ttk.Button(btns, text="▶ Connect monitor",
-                                      command=self._toggle_monitor)
-        self.monitor_btn.pack(side="left", padx=6)
-        ttk.Button(btns, text="Clear log", command=self._clear).pack(side="left")
-        ttk.Button(btns, text="Save log…", command=self._save_log).pack(side="left", padx=6)
-        self.logfile_btn = ttk.Button(btns, text="● Log to file",
-                                      command=self._toggle_logfile)
-        self.logfile_btn.pack(side="left")
-        self.status = ttk.Label(btns, text="ready", foreground="#1FA67A")
-        self.status.pack(side="right")
+
+    def _build_upload_tab(self, nb):
+        """Optional tab: upload Lua/data files into the NodeMCU filesystem via
+        the bundled nodemcu-uploader (only useful with NodeMCU-Lua firmware)."""
+        f = ttk.Frame(nb, padding=10)
+        nb.add(f, text="NodeMCU Lua")
+        f.columnconfigure(0, weight=1)
+
+        ttk.Label(f, text="Lua / data files to upload to the NodeMCU filesystem:"
+                  ).grid(row=0, column=0, columnspan=2, sticky="w")
+
+        listwrap = ttk.Frame(f)
+        listwrap.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        listwrap.columnconfigure(0, weight=1)
+        self.lua_files = tk.Listbox(listwrap, height=4, activestyle="none",
+                                    selectmode="extended")
+        self.lua_files.grid(row=0, column=0, sticky="ew")
+        sb = ttk.Scrollbar(listwrap, orient="vertical",
+                           command=self.lua_files.yview)
+        sb.grid(row=0, column=1, sticky="ns")
+        self.lua_files.configure(yscrollcommand=sb.set)
+
+        filebtns = ttk.Frame(f)
+        filebtns.grid(row=1, column=1, sticky="n", padx=(6, 0))
+        ttk.Button(filebtns, text="Add…", command=self._lua_add, width=8).pack(fill="x")
+        ttk.Button(filebtns, text="Remove", command=self._lua_remove, width=8).pack(fill="x", pady=4)
+        ttk.Button(filebtns, text="Clear", command=self._lua_clear, width=8).pack(fill="x")
+
+        opts = ttk.Frame(f)
+        opts.grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        self.lua_compile = tk.BooleanVar(value=False)
+        self.lua_dofile = tk.BooleanVar(value=False)
+        self.lua_restart = tk.BooleanVar(value=False)
+        ttk.Checkbutton(opts, text="Compile (.lc)",
+                        variable=self.lua_compile).pack(side="left")
+        ttk.Checkbutton(opts, text="Run after upload",
+                        variable=self.lua_dofile).pack(side="left", padx=(12, 0))
+        ttk.Checkbutton(opts, text="Restart after",
+                        variable=self.lua_restart).pack(side="left", padx=(12, 0))
+        ttk.Label(opts, text="Verify").pack(side="left", padx=(12, 4))
+        self.lua_verify = ttk.Combobox(opts, state="readonly", width=6,
+                                       values=["none", "raw", "sha1"])
+        self.lua_verify.set("none")
+        self.lua_verify.pack(side="left")
+
+        btns = ttk.Frame(f)
+        btns.grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        self.upload_btn = ttk.Button(btns, text="⬆ Upload", command=self._upload)
+        self.upload_btn.pack(side="left")
+        self.lualist_btn = ttk.Button(btns, text="List files", command=self._lua_list)
+        self.lualist_btn.pack(side="left", padx=6)
+        self.luaformat_btn = ttk.Button(btns, text="Format FS…", command=self._lua_format)
+        self.luaformat_btn.pack(side="left")
 
     def _build_log(self):
         # padx/pady give inner padding so text isn't flush against the edges;
@@ -230,6 +322,23 @@ class FlasherApp:
             filetypes=[("Firmware", "*.bin"), ("All files", "*")])
         if path:
             self.firmware.set(path)
+
+    def _lua_add(self):
+        paths = filedialog.askopenfilenames(
+            initialdir=FW_DIR,
+            filetypes=[("Lua / data", "*.lua *.lc *.html *.json *.txt"),
+                       ("All files", "*")])
+        existing = set(self.lua_files.get(0, "end"))
+        for p in paths:
+            if p and p not in existing:
+                self.lua_files.insert("end", p)
+
+    def _lua_remove(self):
+        for i in reversed(self.lua_files.curselection()):
+            self.lua_files.delete(i)
+
+    def _lua_clear(self):
+        self.lua_files.delete(0, "end")
 
     def _set_status(self, text, color="#d4d4d4"):
         self.status.configure(text=text, foreground=color)
@@ -456,6 +565,45 @@ class FlasherApp:
         self._set_status("ready")
         self._emit("--- monitor disconnected ---\n")
 
+    # ---- external tools (esptool / nodemcu-uploader) ------------------------
+    # Both need exclusive use of the serial port, so they share the same
+    # prep/teardown: stop the monitor, lock the buttons, run, then reopen the
+    # monitor on success to show the boot log (like CoolTerm).
+    def _begin_tool(self, status):
+        """Free the port and lock the action buttons before running a tool.
+        Returns True if the monitor was running, so it can be reopened after."""
+        was_monitoring = self.monitor_fd is not None
+        if was_monitoring:
+            self._stop_monitor()
+        self.busy = True
+        for b in self.action_btns:
+            b.configure(state="disabled")
+        self._set_status(status, "#e0a800")
+        return was_monitoring
+
+    def _end_tool(self):
+        self.busy = False
+        for b in self.action_btns:
+            b.configure(state="normal")
+
+    def _pump(self, cmd):
+        """Run cmd, stream its combined stdout+stderr to the log, return the exit
+        code. tool_env(): bundled pyserial on PYTHONPATH + NO_COLOR (we render or
+        strip any remaining ANSI ourselves)."""
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, env=tool_env())
+            fd = proc.stdout.fileno()
+            while True:
+                data = os.read(fd, 512)
+                if not data:
+                    break
+                self._emit(data.decode("utf-8", "replace"))
+            return proc.wait()
+        except OSError as e:
+            self._emit(f"\n! error: {e}\n")
+            return 1
+
     # ---- flashing -----------------------------------------------------------
     def _flash(self):
         if self.busy:
@@ -473,47 +621,24 @@ class FlasherApp:
             self._emit("! no working esptool found. Install: brew install esptool\n")
             return
 
-        was_monitoring = self.monitor_fd is not None
-        if was_monitoring:
-            self._stop_monitor()  # free the port for esptool
-
         cmd = esptool + ["--port", port, "--baud", self.baud.get(),
                          "write_flash", "-fm", self.mode.get(), "-fs", "detect"]
         if self.erase.get():
             cmd.append("-e")
         cmd += ["0x0", fw]
 
-        self.busy = True
-        self.flash_btn.configure(state="disabled")
-        self.monitor_btn.configure(state="disabled")
-        self._set_status("flashing…", "#e0a800")
+        reconnect = self._begin_tool("flashing…")
         self._emit("\n==> Flashing %s\n    %s\n" % (os.path.basename(fw),
                                                     " ".join(cmd)))
-        threading.Thread(target=self._run_flash, args=(cmd, was_monitoring),
+        threading.Thread(target=self._run_flash, args=(cmd, reconnect),
                          daemon=True).start()
 
     def _run_flash(self, cmd, reconnect):
-        rc = 1
-        try:
-            # esptool_env(): bundled pyserial on PYTHONPATH + NO_COLOR (we strip
-            # any remaining ANSI ourselves).
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                                    stderr=subprocess.STDOUT, env=esptool_env())
-            fd = proc.stdout.fileno()
-            while True:
-                data = os.read(fd, 512)
-                if not data:
-                    break
-                self._emit(data.decode("utf-8", "replace"))
-            rc = proc.wait()
-        except OSError as e:
-            self._emit(f"\n! flash error: {e}\n")
+        rc = self._pump(cmd)
         self.root.after(0, self._flash_done, rc, reconnect)
 
     def _flash_done(self, rc, reconnect):
-        self.busy = False
-        self.flash_btn.configure(state="normal")
-        self.monitor_btn.configure(state="normal")
+        self._end_tool()
         if rc == 0:
             self._emit("\n==> Done. Device reset into the new firmware.\n")
             self._set_status("flashed ✓", "#1FA67A")
@@ -523,6 +648,94 @@ class FlasherApp:
             self._emit(f"\n! flash failed (exit {rc}). "
                        "Free the port (close CoolTerm) and retry.\n")
             self._set_status("flash failed", "#d9534f")
+
+    # ---- NodeMCU Lua upload (optional tab) ----------------------------------
+    def _nodemcu_cmd(self):
+        """Base nodemcu-uploader argv with the selected port/baud, or None (and
+        an error in the log) if no port is chosen or the uploader is missing."""
+        port = self.port.get()
+        if not port:
+            self._emit("! no serial port selected\n")
+            return None
+        tool = resolve_nodemcu()
+        if not tool:
+            self._emit("! NodeMCU uploader not found (expected bundled in "
+                       "vendor/nodemcu_uploader)\n")
+            return None
+        return tool + ["--port", port, "--baud", self.baud.get()]
+
+    def _run_nodemcu(self, cmd, intro, status):
+        """Shared launcher for the NodeMCU subcommands (upload / list / format)."""
+        if self.busy:
+            return
+        reconnect = self._begin_tool(status)
+        self._emit(intro)
+        threading.Thread(target=self._nodemcu_worker, args=(cmd, reconnect),
+                         daemon=True).start()
+
+    def _nodemcu_worker(self, cmd, reconnect):
+        rc = self._pump(cmd)
+        self.root.after(0, self._nodemcu_done, rc, reconnect)
+
+    def _nodemcu_done(self, rc, reconnect):
+        self._end_tool()
+        if rc == 0:
+            self._emit("\n==> NodeMCU operation complete.\n")
+            self._set_status("done ✓", "#1FA67A")
+            if reconnect:
+                self._start_monitor()
+        else:
+            self._emit(f"\n! NodeMCU operation failed (exit {rc}). Check the "
+                       "board runs NodeMCU-Lua firmware and the port is free.\n")
+            self._set_status("nodemcu failed", "#d9534f")
+
+    def _upload(self):
+        if self.busy:
+            return
+        files = list(self.lua_files.get(0, "end"))
+        if not files:
+            self._emit("! add at least one file to upload\n")
+            return
+        missing = [f for f in files if not os.path.isfile(f)]
+        if missing:
+            self._emit("! file(s) not found: %s\n" % ", ".join(missing))
+            return
+        cmd = self._nodemcu_cmd()
+        if cmd is None:
+            return
+        cmd += ["upload"]
+        if self.lua_compile.get():
+            cmd.append("-c")
+        if self.lua_dofile.get():
+            cmd.append("-e")
+        if self.lua_restart.get():
+            cmd.append("-r")
+        verify = self.lua_verify.get()
+        if verify and verify != "none":
+            cmd += ["-v", verify]
+        cmd += files
+        self._run_nodemcu(cmd, "\n==> Uploading %d file(s) to NodeMCU\n    %s\n"
+                          % (len(files), " ".join(cmd)), "uploading…")
+
+    def _lua_list(self):
+        cmd = self._nodemcu_cmd()
+        if cmd is None:
+            return
+        self._run_nodemcu(cmd + ["file", "list"],
+                          "\n==> Listing files on the NodeMCU filesystem\n",
+                          "listing…")
+
+    def _lua_format(self):
+        if not messagebox.askyesno(
+                "Format filesystem",
+                "Erase ALL files on the NodeMCU filesystem? This cannot be undone."):
+            return
+        cmd = self._nodemcu_cmd()
+        if cmd is None:
+            return
+        self._run_nodemcu(cmd + ["file", "format"],
+                          "\n==> Formatting the NodeMCU filesystem\n",
+                          "formatting…")
 
     def _on_close(self):
         self._stop_monitor()
