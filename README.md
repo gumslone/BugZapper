@@ -23,6 +23,12 @@ serial output in one place, so you don't need separate
   version-robust across esptool 4.x/5.x.
 - **Drop-in** — auto-detects `./firmware/*.bin`; customize via env vars (below).
 
+## Screenshots
+
+| Flash firmware + serial monitor | NodeMCU Lua upload |
+|---|---|
+| ![BugZapper Flash firmware tab](docs/screenshot-flash.png) | ![BugZapper NodeMCU Lua tab](docs/screenshot-nodemcu.png) |
+
 ## Use it
 
 ```sh
