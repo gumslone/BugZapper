@@ -89,6 +89,19 @@ class TestHelpers(unittest.TestCase):
             self.assertEqual(base(flashui.files_in_folder(d, "")), sorted(names))
             self.assertNotIn("deep.lua", base(flashui.files_in_folder(d, "lua")))
 
+    def test_files_in_folder_glob_metachars_in_path(self):
+        # A folder whose path contains glob metacharacters ([ ] * ?) must still
+        # match its files — glob.escape guards against reading them as a pattern.
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as parent:
+            d = os.path.join(parent, "fw [v2] *drafts?")
+            os.mkdir(d)
+            open(os.path.join(d, "init.lua"), "w").close()
+            open(os.path.join(d, "app.lua"), "w").close()
+            got = sorted(os.path.basename(p) for p in flashui.files_in_folder(d, "lua"))
+            self.assertEqual(got, ["app.lua", "init.lua"])
+
     def test_firmware_dir_env_override(self):
         old_argv, old_env = sys.argv, os.environ.get("BUGZAPPER_FW_DIR")
         try:

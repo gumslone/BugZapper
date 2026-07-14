@@ -76,7 +76,8 @@ def list_ports():
 
 
 def list_firmware():
-    return sorted(glob.glob(os.path.join(FW_DIR, "*.bin")))
+    # glob.escape guards against [ * ? in the firmware dir's path (see files_in_folder).
+    return sorted(glob.glob(os.path.join(glob.escape(FW_DIR), "*.bin")))
 
 
 def files_in_folder(folder, exts):
@@ -85,7 +86,9 @@ def files_in_folder(folder, exts):
     a '*'/'all' token means every file. Not recursive — the NodeMCU filesystem is
     flat, so pulling from subfolders would just flatten and collide."""
     raw = [t.strip().lower() for t in re.split(r"[,\s]+", exts or "") if t.strip()]
-    files = sorted(p for p in glob.glob(os.path.join(folder, "*"))
+    # glob.escape the folder: a literal [ * ? in the chosen directory's path
+    # would otherwise be read as a glob pattern and match nothing.
+    files = sorted(p for p in glob.glob(os.path.join(glob.escape(folder), "*"))
                    if os.path.isfile(p))
     if not raw or "*" in raw or "*.*" in raw or "all" in raw:
         return files
@@ -654,25 +657,34 @@ class FlasherApp:
         if not fw or not os.path.isfile(fw):
             self._emit(f"! firmware not found: {fw}\n")
             return
-        esptool = resolve_esptool()
-        if not esptool:
-            self._emit("! no working esptool found. Install: brew install esptool\n")
-            return
-
-        cmd = esptool + ["--port", port, "--baud", self.baud.get(),
-                         "write_flash", "-fm", self.mode.get(), "-fs", "detect"]
-        if self.erase.get():
-            cmd.append("-e")
-        cmd += ["0x0", fw]
-
+        # esptool resolution runs subprocesses, so do it in the worker (below) to
+        # keep the UI responsive. Snapshot the widget values here on the UI thread.
         reconnect = self._begin_tool("flashing…")
-        self._emit("\n==> Flashing %s\n    %s\n" % (os.path.basename(fw),
-                                                    " ".join(cmd)))
-        threading.Thread(target=self._run_flash, args=(cmd, reconnect),
-                         daemon=True).start()
+        threading.Thread(
+            target=self._run_flash,
+            args=(port, fw, self.baud.get(), self.mode.get(), self.erase.get(),
+                  reconnect),
+            daemon=True).start()
 
-    def _run_flash(self, cmd, reconnect):
-        rc = self._pump(cmd)
+    def _run_flash(self, port, fw, baud, mode, erase, reconnect):
+        # try/finally guarantees _flash_done runs (re-enabling the buttons) even
+        # if resolution or _pump raises unexpectedly.
+        rc = 1
+        try:
+            esptool = resolve_esptool()
+            if not esptool:
+                self._emit("! no working esptool found. Install: brew install esptool\n")
+            else:
+                cmd = esptool + ["--port", port, "--baud", baud, "write_flash",
+                                 "-fm", mode, "-fs", "detect"]
+                if erase:
+                    cmd.append("-e")
+                cmd += ["0x0", fw]
+                self._emit("\n==> Flashing %s\n    %s\n"
+                           % (os.path.basename(fw), " ".join(cmd)))
+                rc = self._pump(cmd)
+        except Exception as e:  # never leave the UI stuck busy
+            self._emit(f"\n! error: {e}\n")
         self.root.after(0, self._flash_done, rc, reconnect)
 
     def _flash_done(self, rc, reconnect):
@@ -688,31 +700,34 @@ class FlasherApp:
             self._set_status("flash failed", "#d9534f")
 
     # ---- NodeMCU Lua upload (optional tab) ----------------------------------
-    def _nodemcu_cmd(self):
-        """Base nodemcu-uploader argv with the selected port/baud, or None (and
-        an error in the log) if no port is chosen or the uploader is missing."""
-        port = self.port.get()
-        if not port:
-            self._emit("! no serial port selected\n")
-            return None
-        tool = resolve_nodemcu()
-        if not tool:
-            self._emit("! NodeMCU uploader not found (expected bundled in "
-                       "vendor/nodemcu_uploader)\n")
-            return None
-        return tool + ["--port", port, "--baud", self.baud.get()]
-
-    def _run_nodemcu(self, cmd, intro, status):
-        """Shared launcher for the NodeMCU subcommands (upload / list / format)."""
+    def _run_nodemcu(self, subcmd, intro, status):
+        """Shared launcher for the NodeMCU subcommands (upload / list / format).
+        subcmd is the nodemcu-uploader subcommand + args (the port/baud and tool
+        resolution are added in the worker so the UI stays responsive)."""
         if self.busy:
+            return
+        if not self.port.get():
+            self._emit("! no serial port selected\n")
             return
         reconnect = self._begin_tool(status)
         self._emit(intro)
-        threading.Thread(target=self._nodemcu_worker, args=(cmd, reconnect),
-                         daemon=True).start()
+        threading.Thread(
+            target=self._nodemcu_worker,
+            args=(subcmd, self.port.get(), self.baud.get(), reconnect),
+            daemon=True).start()
 
-    def _nodemcu_worker(self, cmd, reconnect):
-        rc = self._pump(cmd)
+    def _nodemcu_worker(self, subcmd, port, baud, reconnect):
+        # try/finally guarantees _nodemcu_done runs even if resolution/_pump raise.
+        rc = 1
+        try:
+            tool = resolve_nodemcu()
+            if not tool:
+                self._emit("! NodeMCU uploader not found (expected bundled in "
+                           "vendor/nodemcu_uploader)\n")
+            else:
+                rc = self._pump(tool + ["--port", port, "--baud", baud] + subcmd)
+        except Exception as e:  # never leave the UI stuck busy
+            self._emit(f"\n! error: {e}\n")
         self.root.after(0, self._nodemcu_done, rc, reconnect)
 
     def _nodemcu_done(self, rc, reconnect):
@@ -738,20 +753,16 @@ class FlasherApp:
         if missing:
             self._emit("! file(s) not found: %s\n" % ", ".join(missing))
             return
-        cmd = self._nodemcu_cmd()
-        if cmd is None:
-            return
-        cmd += nodemcu_upload_flags(self.lua_compile.get(), self.lua_dofile.get(),
-                                    self.lua_restart.get(), self.lua_verify.get())
-        cmd += files
-        self._run_nodemcu(cmd, "\n==> Uploading %d file(s) to NodeMCU\n    %s\n"
-                          % (len(files), " ".join(cmd)), "uploading…")
+        subcmd = nodemcu_upload_flags(
+            self.lua_compile.get(), self.lua_dofile.get(),
+            self.lua_restart.get(), self.lua_verify.get()) + files
+        self._run_nodemcu(
+            subcmd, "\n==> Uploading %d file(s) to NodeMCU: %s\n"
+            % (len(files), ", ".join(os.path.basename(f) for f in files)),
+            "uploading…")
 
     def _lua_list(self):
-        cmd = self._nodemcu_cmd()
-        if cmd is None:
-            return
-        self._run_nodemcu(cmd + ["file", "list"],
+        self._run_nodemcu(["file", "list"],
                           "\n==> Listing files on the NodeMCU filesystem\n",
                           "listing…")
 
@@ -760,10 +771,7 @@ class FlasherApp:
                 "Format filesystem",
                 "Erase ALL files on the NodeMCU filesystem? This cannot be undone."):
             return
-        cmd = self._nodemcu_cmd()
-        if cmd is None:
-            return
-        self._run_nodemcu(cmd + ["file", "format"],
+        self._run_nodemcu(["file", "format"],
                           "\n==> Formatting the NodeMCU filesystem\n",
                           "formatting…")
 
