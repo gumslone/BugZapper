@@ -90,12 +90,14 @@ class TestHelpers(unittest.TestCase):
             self.assertNotIn("deep.lua", base(flashui.files_in_folder(d, "lua")))
 
     def test_files_in_folder_glob_metachars_in_path(self):
-        # A folder whose path contains glob metacharacters ([ ] * ?) must still
-        # match its files — glob.escape guards against reading them as a pattern.
+        # A folder whose path contains glob metacharacters must still match its
+        # files — glob.escape guards against reading them as a pattern. Use only
+        # brackets: *, ?, etc. are glob metachars too but are illegal in Windows
+        # filenames, and [ ] alone already exercises the escape.
         import os
         import tempfile
         with tempfile.TemporaryDirectory() as parent:
-            d = os.path.join(parent, "fw [v2] *drafts?")
+            d = os.path.join(parent, "fw [v2] drafts")
             os.mkdir(d)
             open(os.path.join(d, "init.lua"), "w").close()
             open(os.path.join(d, "app.lua"), "w").close()
