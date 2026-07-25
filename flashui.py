@@ -175,6 +175,9 @@ class FlasherApp:
         self._sgr_fg = None   # current ANSI foreground (None = default)
         self._sgr_bold = False
         self.busy = False  # flashing in progress
+        self._proc = None  # running esptool/uploader subprocess (for cancel)
+        self._can_cancel = False  # True only while esptool is still connecting
+        self._flash_cancelled = False
 
         self._build_header()
         self._build_tabs()
@@ -258,6 +261,11 @@ class FlasherApp:
         btns.grid(row=2, column=0, columnspan=3, sticky="w", pady=(10, 0))
         self.flash_btn = ttk.Button(btns, text="⚡ Flash", command=self._flash)
         self.flash_btn.pack(side="left")
+        # Enabled only while esptool is still connecting; once the chip responds
+        # (writing about to start) it disables — cancelling mid-write can brick.
+        self.cancel_btn = ttk.Button(btns, text="✕ Cancel", command=self._cancel,
+                                     state="disabled")
+        self.cancel_btn.pack(side="left", padx=6)
 
     def _build_upload_tab(self, nb):
         """Optional tab: upload Lua/data files into the NodeMCU filesystem via
@@ -671,23 +679,39 @@ class FlasherApp:
         for b in self.action_btns:
             b.configure(state="normal")
 
-    def _pump(self, cmd):
+    def _pump(self, cmd, uncancel_marker=None, on_uncancellable=None):
         """Run cmd, stream its combined stdout+stderr to the log, return the exit
         code. tool_env(): bundled pyserial on PYTHONPATH + NO_COLOR (we render or
-        strip any remaining ANSI ourselves)."""
+        strip any remaining ANSI ourselves).
+
+        If uncancel_marker is given, the first time it appears in the output we
+        call on_uncancellable (on the UI thread) — used to close the "cancel while
+        connecting" window once esptool reports the chip (writing is imminent)."""
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, env=tool_env())
+            self._proc = proc
             fd = proc.stdout.fileno()
+            passed_marker = False
+            recent = ""
             while True:
                 data = os.read(fd, 512)
                 if not data:
                     break
-                self._emit(data.decode("utf-8", "replace"))
+                text = data.decode("utf-8", "replace")
+                self._emit(text)
+                if uncancel_marker and not passed_marker:
+                    recent = (recent + text)[-256:]  # marker may span two reads
+                    if uncancel_marker in recent:
+                        passed_marker = True
+                        if on_uncancellable:
+                            self.root.after(0, on_uncancellable)
             return proc.wait()
         except OSError as e:
             self._emit(f"\n! error: {e}\n")
             return 1
+        finally:
+            self._proc = None
 
     # ---- flashing -----------------------------------------------------------
     def _flash(self):
@@ -703,7 +727,12 @@ class FlasherApp:
             return
         # esptool resolution runs subprocesses, so do it in the worker (below) to
         # keep the UI responsive. Snapshot the widget values here on the UI thread.
-        reconnect = self._begin_tool("flashing…")
+        reconnect = self._begin_tool("connecting…")
+        # Cancel is allowed while connecting; _flash_lock_cancel closes the window
+        # once esptool reports the chip (about to write).
+        self._flash_cancelled = False
+        self._can_cancel = True
+        self.cancel_btn.configure(state="normal")
         threading.Thread(
             target=self._run_flash,
             args=(port, fw, self.baud.get(), self.mode.get(), self.erase.get(),
@@ -726,14 +755,44 @@ class FlasherApp:
                 cmd += ["0x0", fw]
                 self._emit("\n==> Flashing %s\n    %s\n"
                            % (os.path.basename(fw), " ".join(cmd)))
-                rc = self._pump(cmd)
+                # "Chip is" is esptool's first line after a successful connect,
+                # before any erase/write — the safe cutoff for cancellation.
+                rc = self._pump(cmd, uncancel_marker="Chip is",
+                                on_uncancellable=self._flash_lock_cancel)
         except Exception as e:  # never leave the UI stuck busy
             self._emit(f"\n! error: {e}\n")
         self.root.after(0, self._flash_done, rc, reconnect)
 
+    def _flash_lock_cancel(self):
+        """Connection established — writing is imminent, so cancelling is no
+        longer safe. Runs on the UI thread."""
+        self._can_cancel = False
+        self.cancel_btn.configure(state="disabled")
+        self._set_status("flashing (writing)…", "#e0a800")
+
+    def _cancel(self):
+        """Abort a flash that's still trying to connect (never mid-write)."""
+        proc = self._proc
+        if not self._can_cancel or proc is None:
+            return
+        self._can_cancel = False
+        self._flash_cancelled = True
+        self.cancel_btn.configure(state="disabled")
+        try:
+            proc.terminate()  # kills esptool; the worker then finishes via _pump
+        except OSError:
+            pass
+        self._emit("\n--- cancelled while connecting (device not touched) ---\n")
+
     def _flash_done(self, rc, reconnect):
         self._end_tool()
-        if rc == 0:
+        self._can_cancel = False
+        self.cancel_btn.configure(state="disabled")
+        if self._flash_cancelled:
+            self._set_status("cancelled", "#d9534f")
+            if reconnect:
+                self._start_monitor()  # device untouched — safe to reopen
+        elif rc == 0:
             self._emit("\n==> Done. Device reset into the new firmware.\n")
             self._set_status("flashed ✓", "#1FA67A")
             if reconnect:
