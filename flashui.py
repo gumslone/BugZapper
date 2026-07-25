@@ -23,7 +23,7 @@ import sys
 import threading
 import queue
 import tkinter as tk
-from tkinter import ttk, filedialog, scrolledtext, messagebox, simpledialog
+from tkinter import ttk, filedialog, messagebox, simpledialog
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # Bundled pure-python esptool + pyserial, so everything works with no install.
@@ -178,6 +178,7 @@ class FlasherApp:
         self._proc = None  # running esptool/uploader subprocess (for cancel)
         self._can_cancel = False  # True only while esptool is still connecting
         self._flash_cancelled = False
+        self._gutter_pending = False  # debounce line-number gutter redraws
 
         self._build_header()
         self._build_tabs()
@@ -322,19 +323,32 @@ class FlasherApp:
         self.luaformat_btn.pack(side="left")
 
     def _build_log(self):
+        # A gutter Canvas (line numbers) + the log Text + a scrollbar, laid out
+        # side by side. self.log stays a plain Text so all insert/delete/tag and
+        # copy bindings below keep working; the gutter redraws in sync with it.
+        wrap = ttk.Frame(self.root)
+        wrap.pack(fill="both", expand=True, padx=10, pady=(10, 0))
+        self._gutter_font = ("Menlo", 11)
+        self.gutter = tk.Canvas(wrap, width=52, bg="#1e1e1e",
+                                highlightthickness=0, bd=0, takefocus=0)
+        self.gutter.pack(side="left", fill="y")
+        sb = ttk.Scrollbar(wrap, orient="vertical")
+        sb.pack(side="right", fill="y")
         # padx/pady give inner padding so text isn't flush against the edges;
         # bd/relief flat keeps the border clean.
-        self.log = scrolledtext.ScrolledText(self.root, height=20, wrap="char",
-                                             bg="#1e1e1e", fg="#d4d4d4",
-                                             insertbackground="#d4d4d4",
-                                             font=("Menlo", 11),
-                                             padx=10, pady=8,
-                                             bd=0, relief="flat")
-        self.log.pack(fill="both", expand=True, padx=10, pady=(10, 0))
+        self.log = tk.Text(wrap, height=20, wrap="char",
+                           bg="#1e1e1e", fg="#d4d4d4", insertbackground="#d4d4d4",
+                           font=("Menlo", 11), padx=10, pady=8, bd=0,
+                           relief="flat", yscrollcommand=self._on_yscroll)
+        self.log.pack(side="left", fill="both", expand=True)
+        sb.configure(command=self.log.yview)
+        self._log_sb = sb
         for code, hexc in PALETTE.items():
             self.log.tag_configure(f"fg{code}", foreground=hexc)
         self.log.tag_configure("bold", font=("Menlo", 11, "bold"))
         self.log.configure(state="disabled")
+        # Keep numbers aligned when the widget is resized (wrapping changes).
+        self.log.bind("<Configure>", lambda e: self._schedule_gutter(), add="+")
 
         # The widget is disabled so the log can't be typed into, but a disabled
         # Text never takes focus, so the copy accelerator had nothing to act on
@@ -379,6 +393,44 @@ class FlasherApp:
         finally:
             self._log_menu.grab_release()
         return "break"
+
+    # ---- line-number gutter -------------------------------------------------
+    def _on_yscroll(self, first, last):
+        """Text's yscrollcommand: drive the scrollbar and repaint the gutter."""
+        self._log_sb.set(first, last)
+        self._schedule_gutter()
+
+    def _schedule_gutter(self):
+        """Coalesce redraws to one per idle cycle (the log streams fast) and let
+        layout settle first, so dlineinfo returns real pixel positions."""
+        if not self._gutter_pending:
+            self._gutter_pending = True
+            self.root.after_idle(self._redraw_gutter)
+
+    def _redraw_gutter(self):
+        self._gutter_pending = False
+        g = self.gutter
+        g.delete("all")
+        # Widen the gutter to fit the largest line number currently shown.
+        total = int(self.log.index("end-1c").split(".")[0])
+        need = 14 + 8 * len(str(max(total, 1)))
+        if int(g.cget("width")) != need:
+            g.configure(width=need)
+        gw = need
+        idx = self.log.index("@0,0")  # first visible display line
+        while True:
+            info = self.log.dlineinfo(idx)
+            if info is None:
+                break  # past the last visible line
+            line, col = idx.split(".")
+            if col == "0":  # only the first display row of a wrapped logical line
+                y, h = info[1], info[3]
+                g.create_text(gw - 6, y + h // 2, anchor="e", text=line,
+                              font=self._gutter_font, fill="#5a5a5a")
+            nxt = self.log.index(f"{idx}+1 display lines")
+            if nxt == idx:  # can't advance (end of text) — avoid an infinite loop
+                break
+            idx = nxt
 
     def _build_send(self):
         f = ttk.Frame(self.root, padding=(10, 6, 10, 10))
@@ -463,6 +515,7 @@ class FlasherApp:
         self.log.configure(state="normal")
         self.log.delete("1.0", "end")
         self.log.configure(state="disabled")
+        self._schedule_gutter()
 
     def _save_log(self):
         """One-shot: write the current log buffer to a file."""
@@ -538,6 +591,7 @@ class FlasherApp:
             self._insert_styled(tail)
         self.log.see("end")
         self.log.configure(state="disabled")
+        self._schedule_gutter()
 
     def _insert_styled(self, seg):
         """Insert a plain (escape-free) span, applying the current SGR style and
