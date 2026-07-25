@@ -328,6 +328,50 @@ class FlasherApp:
         self.log.tag_configure("bold", font=("Menlo", 11, "bold"))
         self.log.configure(state="disabled")
 
+        # The widget is disabled so the log can't be typed into, but a disabled
+        # Text never takes focus, so the copy accelerator had nothing to act on
+        # and selected output could not be copied. Give it focus on click and
+        # wire copy / select-all explicitly (Command on macOS, Control
+        # elsewhere), plus a right-click menu for discoverability.
+        self.log.bind("<Button-1>", lambda e: self.log.focus_set(), add="+")
+        for seq in ("<Control-c>", "<Command-c>"):
+            self.log.bind(seq, self._copy_log)
+        for seq in ("<Control-a>", "<Command-a>"):
+            self.log.bind(seq, self._select_all_log)
+
+        self._log_menu = tk.Menu(self.log, tearoff=0)
+        self._log_menu.add_command(label="Copy", command=self._copy_log)
+        self._log_menu.add_command(label="Select All",
+                                   command=self._select_all_log)
+        self._log_menu.add_separator()
+        self._log_menu.add_command(label="Clear", command=self._clear)
+        for seq in ("<Button-3>", "<Button-2>"):  # right-click / macOS trackpad
+            self.log.bind(seq, self._show_log_menu)
+
+    def _copy_log(self, event=None):
+        """Copy the selection (or everything, if nothing is selected)."""
+        try:
+            text = self.log.get("sel.first", "sel.last")
+        except tk.TclError:
+            text = self.log.get("1.0", "end-1c")
+        if text:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+        return "break"
+
+    def _select_all_log(self, event=None):
+        self.log.tag_add("sel", "1.0", "end-1c")
+        self.log.focus_set()
+        return "break"
+
+    def _show_log_menu(self, event):
+        self.log.focus_set()
+        try:
+            self._log_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self._log_menu.grab_release()
+        return "break"
+
     def _build_send(self):
         f = ttk.Frame(self.root, padding=(10, 6, 10, 10))
         f.pack(fill="x")
