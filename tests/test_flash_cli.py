@@ -88,6 +88,32 @@ class TestFlashCli(unittest.TestCase):
         r = _run("-m", "bogus")
         self.assertEqual(r.returncode, 2)  # argparse usage error
 
+    def test_scan_conflicts_with_file(self):
+        r = _run("--scan", "somewhere", "-f", "a.bin")
+        self.assertEqual(r.returncode, 2)  # argparse usage error
+        self.assertIn("mutually exclusive", r.stderr)
+
+    def test_scan_empty_folder_errors(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            r = _run("--scan", d, "-p", "/dev/null")
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("no recognizable", r.stderr.lower())
+
+    def test_scan_module_shares_gui_logic(self):
+        # flash.py owns the scanner; flashui re-exports it — same object.
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            for n in ("bootloader.bin", "partitions.bin", "app-x.bin"):
+                open(os.path.join(d, n), "w").close()
+            parts, leftovers = flash.scan_esp32_folder(d)
+            self.assertEqual([(o, os.path.basename(p)) for o, p in parts],
+                             [("0x1000", "bootloader.bin"),
+                              ("0x8000", "partitions.bin"),
+                              ("0x10000", "app-x.bin")])
+            self.assertEqual(leftovers, [])
+
     def test_missing_firmware_errors(self):
         # Give a port so it reaches the firmware check, but no .bin exists here.
         r = subprocess.run([sys.executable, FLASH_PY, "-p", "/dev/null", "-f",

@@ -81,21 +81,12 @@ def list_firmware():
     return sorted(glob.glob(os.path.join(glob.escape(FW_DIR), "*.bin")))
 
 
-def files_in_folder(folder, exts):
-    """Top-level files in folder matching the given extensions. exts is a string
-    of space/comma-separated extensions in any form (lua, .lua, *.lua); empty or
-    a '*'/'all' token means every file. Not recursive — the NodeMCU filesystem is
-    flat, so pulling from subfolders would just flatten and collide."""
-    raw = [t.strip().lower() for t in re.split(r"[,\s]+", exts or "") if t.strip()]
-    # glob.escape the folder: a literal [ * ? in the chosen directory's path
-    # would otherwise be read as a glob pattern and match nothing.
-    files = sorted(p for p in glob.glob(os.path.join(glob.escape(folder), "*"))
-                   if os.path.isfile(p))
-    if not raw or "*" in raw or "*.*" in raw or "all" in raw:
-        return files
-    tokens = [t.lstrip("*").lstrip(".") for t in raw]  # *.lua / .lua / lua -> lua
-    return [p for p in files
-            if os.path.splitext(p)[1].lstrip(".").lower() in tokens]
+# Shared pure helpers live in flash.py (the CLI — import-safe with no tkinter),
+# re-exported here so the GUI, CLI and tests share one source of truth.
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+from flash import (files_in_folder, suggest_offset,           # noqa: E402,F401
+                   scan_esp32_folder, ESP32_PART_OFFSETS)     # noqa: E402,F401
 
 
 def parse_offset(text):
@@ -105,50 +96,6 @@ def parse_offset(text):
     off = (text or "").strip() or "0x0"
     int(off, 0)  # validate (0x-hex or decimal)
     return off
-
-
-# Conventional ESP32 image layout, keyed by tell-tale part names. Used only for
-# a hint in the log — never to silently override the offset the user chose.
-# Deliberately no entry for the app image: names like "app"/"firmware" are too
-# generic (an ESP8266 build called myapp.bin must not get an ESP32 hint).
-ESP32_PART_OFFSETS = (("bootloader", "0x1000"), ("partition", "0x8000"),
-                      ("boot_app0", "0xe000"), ("ota_data", "0xe000"))
-
-
-def suggest_offset(filename):
-    """The conventional ESP32 offset for a part named like filename, or None
-    when the name isn't a recognizable part."""
-    name = os.path.basename(filename).lower()
-    for key, off in ESP32_PART_OFFSETS:
-        if key in name:
-            return off
-    return None
-
-
-def scan_esp32_folder(folder):
-    """Map a build folder's .bin files onto the conventional ESP32 layout.
-
-    Returns (parts, leftovers): parts is [(offset, path)] sorted by offset —
-    every recognizable part (bootloader/partition/boot_app0/ota_data) at its
-    conventional offset, plus the app at 0x10000 when that guess is safe:
-    exactly one unrecognized .bin, next to at least one recognized part.
-    Everything else (no recognizable name, or a second file for an
-    already-taken offset) goes to leftovers for the user to place manually."""
-    placed = {}      # offset -> path
-    leftovers = []   # duplicates for a taken offset
-    unknown = []     # no recognizable part name
-    for p in files_in_folder(folder, "bin"):
-        off = suggest_offset(p)
-        if off is None:
-            unknown.append(p)
-        elif off in placed:
-            leftovers.append(p)
-        else:
-            placed[off] = p
-    if placed and len(unknown) == 1 and "0x10000" not in placed:
-        placed["0x10000"] = unknown.pop(0)
-    parts = sorted(placed.items(), key=lambda t: int(t[0], 0))
-    return parts, unknown + leftovers
 
 
 def settings_path():

@@ -59,8 +59,10 @@ python3 flash.py -f build/app.bin -e   # specific file, erase first
 python3 flash.py -p COM5 -b 460800     # explicit port (COMx on Windows) + baud
 python3 flash.py -f 0x1000:boot.bin -f 0x8000:partitions.bin -f 0x10000:app.bin
                                # ESP32 multi-part image (repeat -f with offsets)
+python3 flash.py --scan build/ # ESP32: scan a build folder and flash its parts
+python3 flash.py -i            # chip info: type, MAC, flash size
 python3 flash.py -h            # all options
-./flash.sh                     # macOS / Linux bash twin of flash.py
+./flash.sh                     # macOS / Linux bash twin (has -i; no --scan)
 ```
 
 Requirements: `python3` on any of Windows / macOS / Linux. For the GUI you also

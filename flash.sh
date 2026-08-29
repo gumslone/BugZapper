@@ -15,6 +15,7 @@ set -euo pipefail
 #   -m MODE    flash mode: dio (default) | qio | dout
 #   -e         erase the whole flash before writing ("yes, wipes all data")
 #   -l         list detected serial ports and exit
+#   -i         probe the chip (type, MAC, flash size) and exit
 #   -h         show this help
 #
 # Examples:
@@ -36,6 +37,7 @@ PARTS=()   # [OFFSET:]FILE specs from -f; default filled in below
 BAUD=115200
 FLASH_MODE=dio
 ERASE=0
+CHIP_INFO=0
 
 # Lists likely USB-serial devices on macOS (cu.usbserial*, cu.SLAB*, cu.wchusb*)
 # and Linux (ttyUSB*, ttyACM*).
@@ -44,15 +46,16 @@ list_ports() {
      /dev/ttyUSB* /dev/ttyACM* 2>/dev/null || true
 }
 
-while getopts ":p:f:b:m:elh" opt; do
+while getopts ":p:f:b:m:eilh" opt; do
   case "$opt" in
     p) PORT="$OPTARG" ;;
     f) PARTS+=("$OPTARG") ;;
     b) BAUD="$OPTARG" ;;
     m) FLASH_MODE="$OPTARG" ;;
     e) ERASE=1 ;;
+    i) CHIP_INFO=1 ;;
     l) list_ports; exit 0 ;;
-    h) sed -n '4,30p' "$0"; exit 0 ;;
+    h) sed -n '4,31p' "$0"; exit 0 ;;
     :) echo "Error: -$OPTARG needs an argument" >&2; exit 1 ;;
     \?) echo "Error: unknown option -$OPTARG (try -h)" >&2; exit 1 ;;
   esac
@@ -94,6 +97,11 @@ if [ -z "$PORT" ]; then
     exit 1
   fi
   echo "==> Auto-selected serial port: $PORT"
+fi
+
+# Read-only chip probe (type, MAC, flash size) — needs no firmware.
+if [ "$CHIP_INFO" = 1 ]; then
+  exec "${ESPTOOL[@]}" --port "$PORT" --baud "$BAUD" flash_id
 fi
 
 # Default firmware: the first .bin in ./firmware (of the current project).

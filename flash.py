@@ -12,6 +12,8 @@ vendor/, so nothing needs installing.
   python3 flash.py -l                   # list detected serial ports
   python3 flash.py -f 0x1000:boot.bin -f 0x8000:partitions.bin \\
                    -f 0x10000:app.bin   # ESP32: multi-part image at offsets
+  python3 flash.py --scan build/        # ESP32: scan a build folder & flash it
+  python3 flash.py -i                   # chip info (type, MAC, flash size)
 """
 import argparse
 import glob
@@ -38,6 +40,67 @@ def tool_env():
 def list_ports():
     """Serial ports across all platforms (COMx on Windows, /dev/* elsewhere)."""
     return sorted(p.device for p in comports())
+
+
+def files_in_folder(folder, exts):
+    """Top-level files in folder matching the given extensions. exts is a string
+    of space/comma-separated extensions in any form (lua, .lua, *.lua); empty or
+    a '*'/'all' token means every file. Not recursive — the NodeMCU filesystem is
+    flat, so pulling from subfolders would just flatten and collide."""
+    raw = [t.strip().lower() for t in re.split(r"[,\s]+", exts or "") if t.strip()]
+    # glob.escape the folder: a literal [ * ? in the chosen directory's path
+    # would otherwise be read as a glob pattern and match nothing.
+    files = sorted(p for p in glob.glob(os.path.join(glob.escape(folder), "*"))
+                   if os.path.isfile(p))
+    if not raw or "*" in raw or "*.*" in raw or "all" in raw:
+        return files
+    tokens = [t.lstrip("*").lstrip(".") for t in raw]  # *.lua / .lua / lua -> lua
+    return [p for p in files
+            if os.path.splitext(p)[1].lstrip(".").lower() in tokens]
+
+
+# Conventional ESP32 image layout, keyed by tell-tale part names. Used only for
+# hints and folder scanning — never to silently override an offset the user
+# chose. Deliberately no entry for the app image: names like "app"/"firmware"
+# are too generic (an ESP8266 build called myapp.bin must not get an ESP32 hint).
+ESP32_PART_OFFSETS = (("bootloader", "0x1000"), ("partition", "0x8000"),
+                      ("boot_app0", "0xe000"), ("ota_data", "0xe000"))
+
+
+def suggest_offset(filename):
+    """The conventional ESP32 offset for a part named like filename, or None
+    when the name isn't a recognizable part."""
+    name = os.path.basename(filename).lower()
+    for key, off in ESP32_PART_OFFSETS:
+        if key in name:
+            return off
+    return None
+
+
+def scan_esp32_folder(folder):
+    """Map a build folder's .bin files onto the conventional ESP32 layout.
+
+    Returns (parts, leftovers): parts is [(offset, path)] sorted by offset —
+    every recognizable part (bootloader/partition/boot_app0/ota_data) at its
+    conventional offset, plus the app at 0x10000 when that guess is safe:
+    exactly one unrecognized .bin, next to at least one recognized part.
+    Everything else (no recognizable name, or a second file for an
+    already-taken offset) goes to leftovers for the user to place manually."""
+    placed = {}      # offset -> path
+    leftovers = []   # duplicates for a taken offset
+    unknown = []     # no recognizable part name
+    for p in files_in_folder(folder, "bin"):
+        off = suggest_offset(p)
+        if off is None:
+            unknown.append(p)
+        elif off in placed:
+            leftovers.append(p)
+        else:
+            placed[off] = p
+    if placed and len(unknown) == 1 and "0x10000" not in placed:
+        placed["0x10000"] = unknown.pop(0)
+    parts = sorted(placed.items(), key=lambda t: int(t[0], 0))
+    return parts, unknown + leftovers
 
 
 # A -f spec's offset prefix: 0x-hex or decimal. Anything else (a Windows drive
@@ -107,7 +170,15 @@ def main():
                     help="erase the whole flash before writing (wipes all data)")
     ap.add_argument("-l", "--list", action="store_true",
                     help="list detected serial ports and exit")
+    ap.add_argument("--scan", metavar="FOLDER",
+                    help="scan an ESP32 build folder and flash its recognizable "
+                         "parts (bootloader/partitions/boot_app0 + the app)")
+    ap.add_argument("-i", "--chip-info", action="store_true",
+                    help="probe the chip (type, MAC, flash size) and exit")
     args = ap.parse_args()
+
+    if args.scan and args.file:
+        ap.error("--scan and -f are mutually exclusive")
 
     ports = list_ports()
     if args.list:
@@ -130,7 +201,22 @@ def main():
             return 1
         print(f"==> Auto-selected serial port: {port}")
 
-    if args.file:
+    if args.chip_info:
+        # read-only probe: chip type, MAC, flash manufacturer/size
+        return subprocess.run(esptool + ["--port", port, "--baud",
+                                         str(args.baud), "flash_id"],
+                              env=tool_env()).returncode
+
+    if args.scan:
+        parts, leftovers = scan_esp32_folder(args.scan)
+        if not parts:
+            print(f"Error: no recognizable ESP32 parts in {args.scan}",
+                  file=sys.stderr)
+            return 1
+        for p in leftovers:
+            print(f"    (skipping {os.path.basename(p)} — flash it separately "
+                  "with -f OFFSET:FILE if it belongs to the image)")
+    elif args.file:
         # lowest offset first, the conventional bootloader→app order
         parts = sorted((parse_part(s) for s in args.file),
                        key=lambda t: int(t[0], 0))
