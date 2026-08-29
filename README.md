@@ -27,10 +27,13 @@ shows the serial output in one place, so you don't need separate
   [`nodemcu-uploader`](https://github.com/kmpm/nodemcu-uploader) — no install.
 - **ESP32 multi-part images** — a normal ESP32 build is several files at
   different offsets (bootloader `0x1000`, partition table `0x8000`, app
-  `0x10000`). Queue them in the GUI's **Parts** list (Firmware + Offset →
-  "+ Add part", or **Scan…** to auto-fill the list from a build folder), or
-  repeat `-f OFFSET:FILE` on the CLI — they're flashed in one esptool call.
-  Single-file (merged/factory) images still just flash at `0x0`.
+  `0x10000`). In the GUI these live behind the **ESP32 / advanced** disclosure
+  (collapsed by default — flashing an ESP8266 never shows an offset): queue
+  parts with Offset → "+ Add part", or **Scan…** to auto-fill from a build
+  folder. On the CLI, repeat `-f OFFSET:FILE`. Either way they're flashed in
+  one esptool call; single-file (merged/factory) images still just flash at
+  `0x0`, and the collapsed toggle summarizes any hidden offset/parts so they
+  can't silently change a flash.
 - **CLI (`flash.py`, or `flash.sh` on Unix)** — the same flashing as a one-liner;
   version-robust across esptool 4.x/5.x.
 - **Drop-in** — auto-detects `./firmware/*.bin`; customize via env vars (below).

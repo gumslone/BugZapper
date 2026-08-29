@@ -243,6 +243,36 @@ class TestGuiSmoke(unittest.TestCase):
             self.assertEqual(app._parts, [("0x0", bl)])
         root.destroy()
 
+    def test_advanced_section_collapsed_by_default(self):
+        import os
+        import tempfile
+        import tkinter as tk
+        root = tk.Tk()
+        app = flashui.FlasherApp(root)
+        # collapsed at startup: the plain ESP8266 UI, no offset/parts visible
+        self.assertFalse(app.adv_visible)
+        self.assertEqual(app.adv_frame.grid_info(), {})
+        self.assertIn("▸", app.adv_btn["text"])
+        # expanding shows the frame; collapsing hides it again
+        app._toggle_advanced()
+        self.assertTrue(app.adv_visible)
+        self.assertNotEqual(app.adv_frame.grid_info(), {})
+        self.assertIn("▾", app.adv_btn["text"])
+        # hidden non-default state is summarized on the collapsed toggle
+        with tempfile.TemporaryDirectory() as d:
+            fw = os.path.join(d, "bootloader.bin")
+            open(fw, "w").close()
+            app.firmware.set(fw)
+            app.fw_offset.delete(0, "end")
+            app.fw_offset.insert(0, "0x1000")
+            app._add_part()
+            app._toggle_advanced()  # collapse
+            self.assertIn("1 part(s)", app.adv_btn["text"])
+            self.assertIn("offset 0x1000", app.adv_btn["text"])
+            app._clear_parts()
+            self.assertNotIn("part", app.adv_btn["text"])
+        root.destroy()
+
     def test_lua_add_paths_dedupes_and_skips_non_files(self):
         import os
         import tempfile

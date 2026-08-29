@@ -313,10 +313,6 @@ class FlasherApp:
         self.mode = ttk.Combobox(row, state="readonly", width=6, values=MODES)
         self.mode.set("dio")
         self.mode.pack(side="left", padx=(4, 16))
-        ttk.Label(row, text="Offset").pack(side="left")
-        self.fw_offset = ttk.Entry(row, width=8)
-        self.fw_offset.insert(0, "0x0")
-        self.fw_offset.pack(side="left", padx=(4, 16))
         self.erase = tk.BooleanVar(value=False)
         ttk.Checkbutton(row, text="Erase flash (wipes all data)",
                         variable=self.erase).pack(side="left")
@@ -330,29 +326,76 @@ class FlasherApp:
         self.cancel_btn = ttk.Button(btns, text="✕ Cancel", command=self._cancel,
                                      state="disabled")
         self.cancel_btn.pack(side="left", padx=6)
-        ttk.Button(btns, text="+ Add part",
-                   command=self._add_part).pack(side="left", padx=(16, 0))
+        # ESP8266 users never need offsets — everything ESP32/multi-part lives
+        # behind this disclosure, collapsed by default so the simple flow stays
+        # a two-click affair. The label summarizes hidden non-default state.
+        self.adv_btn = ttk.Button(btns, command=self._toggle_advanced)
+        self.adv_btn.pack(side="left", padx=(16, 0))
 
         # Multi-part images (ESP32: bootloader @0x1000, partition table @0x8000,
-        # app @0x10000). "+ Add part" queues Firmware@Offset here; a non-empty
+        # app @0x10000). "+ Add part" queues Firmware@Offset; a non-empty Parts
         # list is flashed together in one esptool call, otherwise the single
-        # Firmware file above is flashed at Offset.
-        parts = ttk.Frame(f)
-        parts.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(8, 0))
-        parts.columnconfigure(0, weight=1)
-        ttk.Label(parts, text="Parts (ESP32 multi-file image — empty = just the "
-                              "file above):").grid(row=0, column=0, columnspan=2,
-                                                   sticky="w")
-        self.parts_box = tk.Listbox(parts, height=3, activestyle="none",
+        # Firmware file above is flashed at Offset (0x0 unless changed here).
+        adv = ttk.Frame(f)
+        adv.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        adv.columnconfigure(0, weight=1)
+        self.adv_frame = adv
+
+        offrow = ttk.Frame(adv)
+        offrow.grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(offrow, text="Offset").pack(side="left")
+        self.fw_offset = ttk.Entry(offrow, width=8)
+        self.fw_offset.insert(0, "0x0")
+        self.fw_offset.pack(side="left", padx=(4, 4))
+        ttk.Label(offrow, text="— where the file is written; ESP8266 images "
+                              "stay at 0x0").pack(side="left")
+        ttk.Button(offrow, text="+ Add part",
+                   command=self._add_part).pack(side="left", padx=(16, 0))
+
+        ttk.Label(adv, text="Parts (ESP32 multi-file image — empty = just the "
+                            "file above):").grid(row=1, column=0, columnspan=2,
+                                                 sticky="w", pady=(6, 0))
+        self.parts_box = tk.Listbox(adv, height=3, activestyle="none",
                                     selectmode="extended")
-        self.parts_box.grid(row=1, column=0, sticky="ew", pady=(2, 0))
-        pb = ttk.Frame(parts)
-        pb.grid(row=1, column=1, sticky="n", padx=(6, 0))
+        self.parts_box.grid(row=2, column=0, sticky="ew", pady=(2, 0))
+        pb = ttk.Frame(adv)
+        pb.grid(row=2, column=1, sticky="n", padx=(6, 0))
         ttk.Button(pb, text="Scan…", command=self._scan_parts_folder,
                    width=8).pack(fill="x")
         ttk.Button(pb, text="Remove", command=self._remove_part, width=8).pack(fill="x", pady=4)
         ttk.Button(pb, text="Clear", command=self._clear_parts, width=8).pack(fill="x")
         self._parts = []  # [(offset_str, full_path)]; parts_box shows basenames
+
+        self.adv_visible = False
+        adv.grid_remove()  # collapsed by default — plain ESP8266 UI
+        self._update_adv_label()
+
+    def _toggle_advanced(self):
+        """Show/hide the ESP32 offset + parts section."""
+        self.adv_visible = not self.adv_visible
+        if self.adv_visible:
+            self.adv_frame.grid()
+        else:
+            self.adv_frame.grid_remove()
+        self._update_adv_label()
+
+    def _update_adv_label(self):
+        """Toggle-button text; when collapsed, surface any non-default state so
+        a hidden offset or queued parts can never silently change a flash."""
+        if self.adv_visible:
+            self.adv_btn.configure(text="▾ ESP32 / advanced")
+            return
+        extras = []
+        try:
+            off = parse_offset(self.fw_offset.get())
+            if int(off, 0) != 0:
+                extras.append(f"offset {off}")
+        except ValueError:
+            extras.append("bad offset")
+        if self._parts:
+            extras.append(f"{len(self._parts)} part(s)")
+        suffix = f" ({', '.join(extras)})" if extras else ""
+        self.adv_btn.configure(text=f"▸ ESP32 / advanced{suffix}")
 
     def _build_upload_tab(self, nb):
         """Optional tab: upload Lua/data files into the NodeMCU filesystem via
@@ -920,6 +963,7 @@ class FlasherApp:
                        f"at {hint} (you queued it at {off})\n")
         self._parts.append((off, fw))
         self.parts_box.insert("end", f"{off}  {os.path.basename(fw)}")
+        self._update_adv_label()
 
     def _scan_parts_folder(self):
         """Fill the Parts list from an ESP32 build folder (see
@@ -948,15 +992,18 @@ class FlasherApp:
         for p in leftovers:
             self._emit(f"    (skipped {os.path.basename(p)} — add it manually "
                        "with an offset if it belongs to the image)\n")
+        self._update_adv_label()
 
     def _remove_part(self):
         for i in reversed(self.parts_box.curselection()):
             del self._parts[i]
             self.parts_box.delete(i)
+        self._update_adv_label()
 
     def _clear_parts(self):
         self._parts.clear()
         self.parts_box.delete(0, "end")
+        self._update_adv_label()
 
     def _flash(self):
         if self.busy:
