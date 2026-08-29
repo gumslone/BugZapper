@@ -110,6 +110,48 @@ class TestHelpers(unittest.TestCase):
         self.assertIsNone(flashui.suggest_offset("firmware-v1.2.bin"))
         self.assertIsNone(flashui.suggest_offset("myapp.bin"))
 
+    def test_scan_esp32_folder(self):
+        import os
+        import tempfile
+
+        def touch(d, *names):
+            for n in names:
+                open(os.path.join(d, n), "w").close()
+
+        def scanned(d):
+            parts, leftovers = flashui.scan_esp32_folder(d)
+            return ([(o, os.path.basename(p)) for o, p in parts],
+                    sorted(os.path.basename(p) for p in leftovers))
+
+        # full IDF-style build: parts at conventional offsets, single
+        # unrecognized .bin promoted to the app slot, sorted by offset
+        with tempfile.TemporaryDirectory() as d:
+            touch(d, "bootloader.bin", "partitions.bin", "boot_app0.bin",
+                  "myapp.bin", "notes.txt")
+            self.assertEqual(scanned(d), ([("0x1000", "bootloader.bin"),
+                                           ("0x8000", "partitions.bin"),
+                                           ("0xe000", "boot_app0.bin"),
+                                           ("0x10000", "myapp.bin")], []))
+
+        # only unrecognizable bins: nothing is guessed (no bogus app slot)
+        with tempfile.TemporaryDirectory() as d:
+            touch(d, "a.bin", "b.bin")
+            self.assertEqual(scanned(d), ([], ["a.bin", "b.bin"]))
+
+        # two unrecognized bins: neither is promoted to the app slot
+        with tempfile.TemporaryDirectory() as d:
+            touch(d, "bootloader.bin", "x.bin", "y.bin")
+            self.assertEqual(scanned(d), ([("0x1000", "bootloader.bin")],
+                                          ["x.bin", "y.bin"]))
+
+        # duplicate for a taken offset goes to leftovers, never the app slot
+        with tempfile.TemporaryDirectory() as d:
+            touch(d, "bootloader.bin", "bootloader_dio.bin", "app-img.bin")
+            parts, leftovers = scanned(d)
+            self.assertEqual(parts[0], ("0x1000", "bootloader.bin"))
+            self.assertIn(("0x10000", "app-img.bin"), parts)
+            self.assertEqual(leftovers, ["bootloader_dio.bin"])
+
     def test_files_in_folder_glob_metachars_in_path(self):
         # A folder whose path contains glob metacharacters must still match its
         # files — glob.escape guards against reading them as a pattern. Use only

@@ -124,6 +124,32 @@ def suggest_offset(filename):
     return None
 
 
+def scan_esp32_folder(folder):
+    """Map a build folder's .bin files onto the conventional ESP32 layout.
+
+    Returns (parts, leftovers): parts is [(offset, path)] sorted by offset —
+    every recognizable part (bootloader/partition/boot_app0/ota_data) at its
+    conventional offset, plus the app at 0x10000 when that guess is safe:
+    exactly one unrecognized .bin, next to at least one recognized part.
+    Everything else (no recognizable name, or a second file for an
+    already-taken offset) goes to leftovers for the user to place manually."""
+    placed = {}      # offset -> path
+    leftovers = []   # duplicates for a taken offset
+    unknown = []     # no recognizable part name
+    for p in files_in_folder(folder, "bin"):
+        off = suggest_offset(p)
+        if off is None:
+            unknown.append(p)
+        elif off in placed:
+            leftovers.append(p)
+        else:
+            placed[off] = p
+    if placed and len(unknown) == 1 and "0x10000" not in placed:
+        placed["0x10000"] = unknown.pop(0)
+    parts = sorted(placed.items(), key=lambda t: int(t[0], 0))
+    return parts, unknown + leftovers
+
+
 def tool_env():
     """Env for running the bundled tools (esptool, nodemcu-uploader): bundled
     pyserial on PYTHONPATH, and NO_COLOR (we render/strip ANSI ourselves)."""
@@ -322,8 +348,10 @@ class FlasherApp:
         self.parts_box.grid(row=1, column=0, sticky="ew", pady=(2, 0))
         pb = ttk.Frame(parts)
         pb.grid(row=1, column=1, sticky="n", padx=(6, 0))
-        ttk.Button(pb, text="Remove", command=self._remove_part, width=8).pack(fill="x")
-        ttk.Button(pb, text="Clear", command=self._clear_parts, width=8).pack(fill="x", pady=(4, 0))
+        ttk.Button(pb, text="Scan…", command=self._scan_parts_folder,
+                   width=8).pack(fill="x")
+        ttk.Button(pb, text="Remove", command=self._remove_part, width=8).pack(fill="x", pady=4)
+        ttk.Button(pb, text="Clear", command=self._clear_parts, width=8).pack(fill="x")
         self._parts = []  # [(offset_str, full_path)]; parts_box shows basenames
 
     def _build_upload_tab(self, nb):
@@ -892,6 +920,34 @@ class FlasherApp:
                        f"at {hint} (you queued it at {off})\n")
         self._parts.append((off, fw))
         self.parts_box.insert("end", f"{off}  {os.path.basename(fw)}")
+
+    def _scan_parts_folder(self):
+        """Fill the Parts list from an ESP32 build folder (see
+        scan_esp32_folder). Everything lands in the list for review — nothing
+        is flashed until the user hits Flash."""
+        folder = filedialog.askdirectory(
+            initialdir=FW_DIR, title="Scan an ESP32 build folder for parts")
+        if not folder:
+            return
+        found, leftovers = scan_esp32_folder(folder)
+        if not found:
+            self._emit(f"! no recognizable ESP32 parts in {folder}\n")
+            return
+        if self._parts and not messagebox.askyesno(
+                "Replace parts",
+                "Replace the %d queued part(s) with the scanned folder?"
+                % len(self._parts)):
+            return
+        self._clear_parts()
+        for off, path in found:
+            self._parts.append((off, path))
+            self.parts_box.insert("end", f"{off}  {os.path.basename(path)}")
+        self._emit("--- scanned %s: %s ---\n" % (
+            folder, ", ".join("%s @ %s" % (os.path.basename(p), o)
+                              for o, p in found)))
+        for p in leftovers:
+            self._emit(f"    (skipped {os.path.basename(p)} — add it manually "
+                       "with an offset if it belongs to the image)\n")
 
     def _remove_part(self):
         for i in reversed(self.parts_box.curselection()):
