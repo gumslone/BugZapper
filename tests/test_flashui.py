@@ -216,7 +216,7 @@ class TestGuiSmoke(unittest.TestCase):
         self.assertIsNone(app.monitor_ser)
         self.assertEqual(len(app.action_btns), 6)
         for attr in ("lua_files", "upload_btn", "flash_btn", "monitor_btn",
-                     "chipinfo_btn"):
+                     "chipinfo_btn", "nm_cancel_btn"):
             self.assertTrue(hasattr(app, attr))
         root.destroy()
 
@@ -266,6 +266,35 @@ class TestGuiSmoke(unittest.TestCase):
                 msgs.append(app.q.get_nowait())
             self.assertTrue(any("hint:" in m and "0x1000" in m for m in msgs))
             self.assertEqual(app._parts, [("0x0", bl)])
+        root.destroy()
+
+    def test_cancel_lifecycle_covers_both_buttons(self):
+        import tkinter as tk
+        root = tk.Tk()
+        app = flashui.FlasherApp(root)
+        states = lambda: [str(b["state"]) for b in app.cancel_btns]
+        # both cancels disabled at rest
+        self.assertEqual(len(app.cancel_btns), 2)
+        self.assertEqual(states(), ["disabled", "disabled"])
+        # arming enables both and records the note
+        app._arm_cancel("test cancelled")
+        self.assertTrue(app._can_cancel)
+        self.assertFalse(app._op_cancelled)
+        self.assertEqual(app._cancel_note, "test cancelled")
+        self.assertEqual(states(), ["normal", "normal"])
+        # the write-marker lock disables both without marking cancelled
+        app._lock_cancel()
+        self.assertFalse(app._can_cancel)
+        self.assertFalse(app._op_cancelled)
+        self.assertEqual(states(), ["disabled", "disabled"])
+        # cancel after lock is a no-op (never mid-write)
+        app._cancel()
+        self.assertFalse(app._op_cancelled)
+        # _end_tool always leaves cancel disarmed
+        app._arm_cancel("again")
+        app._end_tool()
+        self.assertFalse(app._can_cancel)
+        self.assertEqual(states(), ["disabled", "disabled"])
         root.destroy()
 
     def test_settings_restore_and_save(self):

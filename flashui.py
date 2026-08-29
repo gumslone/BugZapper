@@ -263,8 +263,9 @@ class FlasherApp:
         self._sgr_bold = False
         self.busy = False  # flashing in progress
         self._proc = None  # running esptool/uploader subprocess (for cancel)
-        self._can_cancel = False  # True only while esptool is still connecting
-        self._flash_cancelled = False
+        self._can_cancel = False  # True only while cancelling is still safe
+        self._op_cancelled = False
+        self._cancel_note = "operation cancelled"  # log line on cancel
         self._gutter_pending = False  # debounce line-number gutter redraws
 
         self._build_header()
@@ -275,6 +276,8 @@ class FlasherApp:
         self.action_btns = [self.flash_btn, self.monitor_btn, self.upload_btn,
                             self.lualist_btn, self.luaformat_btn,
                             self.chipinfo_btn]
+        # One ✕ Cancel per tab, armed/locked/disarmed together.
+        self.cancel_btns = [self.cancel_btn, self.nm_cancel_btn]
         self._refresh_ports(select_first=True)
         self._refresh_firmware()
         self._apply_settings(load_settings())  # after ports, so a saved port wins
@@ -485,6 +488,11 @@ class FlasherApp:
         self.lualist_btn.pack(side="left", padx=6)
         self.luaformat_btn = ttk.Button(btns, text="Format FS…", command=self._lua_format)
         self.luaformat_btn.pack(side="left")
+        # Same cancel semantics as flashing: active while the op is still safe
+        # to abort (an upload locks once file transfer starts).
+        self.nm_cancel_btn = ttk.Button(btns, text="✕ Cancel",
+                                        command=self._cancel, state="disabled")
+        self.nm_cancel_btn.pack(side="left", padx=6)
 
     def _build_log(self):
         # A gutter Canvas (line numbers) + the log Text + a scrollbar, laid out
@@ -894,6 +902,9 @@ class FlasherApp:
 
     def _end_tool(self):
         self.busy = False
+        self._can_cancel = False
+        for b in self.cancel_btns:
+            b.configure(state="disabled")
         for b in self.action_btns:
             b.configure(state="normal")
 
@@ -943,6 +954,8 @@ class FlasherApp:
             self._emit("! no serial port selected\n")
             return
         reconnect = self._begin_tool("probing…")
+        # the probe is read-only, so it stays cancellable for its whole run
+        self._arm_cancel("chip probe cancelled")
         threading.Thread(target=self._chip_info_worker,
                          args=(port, self.baud.get(), reconnect),
                          daemon=True).start()
@@ -963,7 +976,9 @@ class FlasherApp:
 
     def _chip_info_done(self, rc, reconnect):
         self._end_tool()
-        if rc == 0:
+        if self._op_cancelled:
+            self._set_status("cancelled", "#d9534f")
+        elif rc == 0:
             self._set_status("chip info ✓", "#1FA67A")
         else:
             self._emit(f"\n! chip probe failed (exit {rc}). Is the board in "
@@ -1069,11 +1084,9 @@ class FlasherApp:
         # esptool resolution runs subprocesses, so do it in the worker (below) to
         # keep the UI responsive. Snapshot the widget values here on the UI thread.
         reconnect = self._begin_tool("connecting…")
-        # Cancel is allowed while connecting; _flash_lock_cancel closes the window
-        # once esptool reports the chip (about to write).
-        self._flash_cancelled = False
-        self._can_cancel = True
-        self.cancel_btn.configure(state="normal")
+        # Cancel is allowed while connecting; the "Chip is" marker closes the
+        # window once esptool reports the chip (about to write).
+        self._arm_cancel("flash cancelled while connecting (device not touched)")
         threading.Thread(
             target=self._run_flash,
             args=(port, parts, self.baud.get(), self.mode.get(),
@@ -1100,38 +1113,48 @@ class FlasherApp:
                 self._emit("\n==> Flashing %s\n    %s\n" % (names, " ".join(cmd)))
                 # "Chip is" is esptool's first line after a successful connect,
                 # before any erase/write — the safe cutoff for cancellation.
-                rc = self._pump(cmd, uncancel_marker="Chip is",
-                                on_uncancellable=self._flash_lock_cancel)
+                rc = self._pump(
+                    cmd, uncancel_marker="Chip is",
+                    on_uncancellable=lambda: self._lock_cancel("flashing (writing)…"))
         except Exception as e:  # never leave the UI stuck busy
             self._emit(f"\n! error: {e}\n")
         self.root.after(0, self._flash_done, rc, reconnect)
 
-    def _flash_lock_cancel(self):
-        """Connection established — writing is imminent, so cancelling is no
-        longer safe. Runs on the UI thread."""
+    def _arm_cancel(self, note):
+        """Enable ✕ Cancel for the operation that is starting; note is what the
+        log prints if the user cancels."""
+        self._op_cancelled = False
+        self._cancel_note = note
+        self._can_cancel = True
+        for b in self.cancel_btns:
+            b.configure(state="normal")
+
+    def _lock_cancel(self, status=None):
+        """Close the cancel window — writing is imminent, aborting is no longer
+        safe. Runs on the UI thread (via _pump's marker callback)."""
         self._can_cancel = False
-        self.cancel_btn.configure(state="disabled")
-        self._set_status("flashing (writing)…", "#e0a800")
+        for b in self.cancel_btns:
+            b.configure(state="disabled")
+        if status:
+            self._set_status(status, "#e0a800")
 
     def _cancel(self):
-        """Abort a flash that's still trying to connect (never mid-write)."""
+        """Abort the running operation while it's still safe — never mid-write
+        (see _arm_cancel and the uncancel markers)."""
         proc = self._proc
         if not self._can_cancel or proc is None:
             return
-        self._can_cancel = False
-        self._flash_cancelled = True
-        self.cancel_btn.configure(state="disabled")
+        self._op_cancelled = True
+        self._lock_cancel()
         try:
-            proc.terminate()  # kills esptool; the worker then finishes via _pump
+            proc.terminate()  # kills the tool; the worker then finishes via _pump
         except OSError:
             pass
-        self._emit("\n--- cancelled while connecting (device not touched) ---\n")
+        self._emit(f"\n--- {self._cancel_note} ---\n")
 
     def _flash_done(self, rc, reconnect):
         self._end_tool()
-        self._can_cancel = False
-        self.cancel_btn.configure(state="disabled")
-        if self._flash_cancelled:
+        if self._op_cancelled:
             self._set_status("cancelled", "#d9534f")
             if reconnect:
                 self._start_monitor()  # device untouched — safe to reopen
@@ -1146,23 +1169,30 @@ class FlasherApp:
             self._set_status("flash failed", "#d9534f")
 
     # ---- NodeMCU Lua upload (optional tab) ----------------------------------
-    def _run_nodemcu(self, subcmd, intro, status):
+    def _run_nodemcu(self, subcmd, intro, status,
+                     cancel_note="operation cancelled",
+                     uncancel_marker=None, lock_status=None):
         """Shared launcher for the NodeMCU subcommands (upload / list / format).
         subcmd is the nodemcu-uploader subcommand + args (the port/baud and tool
-        resolution are added in the worker so the UI stays responsive)."""
+        resolution are added in the worker so the UI stays responsive). Cancel is
+        armed with cancel_note; when uncancel_marker is given, its appearance in
+        the output locks cancel (and shows lock_status) — used by upload, whose
+        writes start at 'Transferring'."""
         if self.busy:
             return
         if not self.port.get():
             self._emit("! no serial port selected\n")
             return
         reconnect = self._begin_tool(status)
+        self._arm_cancel(cancel_note)
         self._emit(intro)
         threading.Thread(
             target=self._nodemcu_worker,
-            args=(subcmd, self.port.get(), self.baud.get(), reconnect),
+            args=(subcmd, self.port.get(), self.baud.get(), reconnect,
+                  uncancel_marker, lock_status),
             daemon=True).start()
 
-    def _nodemcu_worker(self, subcmd, port, baud, reconnect):
+    def _nodemcu_worker(self, subcmd, port, baud, reconnect, marker, lock_status):
         # try/finally guarantees _nodemcu_done runs even if resolution/_pump raise.
         rc = 1
         try:
@@ -1171,14 +1201,21 @@ class FlasherApp:
                 self._emit("! NodeMCU uploader not found (expected bundled in "
                            "vendor/nodemcu_uploader)\n")
             else:
-                rc = self._pump(tool + ["--port", port, "--baud", baud] + subcmd)
+                on_lock = ((lambda: self._lock_cancel(lock_status))
+                           if marker else None)
+                rc = self._pump(tool + ["--port", port, "--baud", baud] + subcmd,
+                                uncancel_marker=marker, on_uncancellable=on_lock)
         except Exception as e:  # never leave the UI stuck busy
             self._emit(f"\n! error: {e}\n")
         self.root.after(0, self._nodemcu_done, rc, reconnect)
 
     def _nodemcu_done(self, rc, reconnect):
         self._end_tool()
-        if rc == 0:
+        if self._op_cancelled:
+            self._set_status("cancelled", "#d9534f")
+            if reconnect:
+                self._start_monitor()
+        elif rc == 0:
             self._emit("\n==> NodeMCU operation complete.\n")
             self._set_status("done ✓", "#1FA67A")
             if reconnect:
@@ -1205,12 +1242,14 @@ class FlasherApp:
         self._run_nodemcu(
             subcmd, "\n==> Uploading %d file(s) to NodeMCU: %s\n"
             % (len(files), ", ".join(os.path.basename(f) for f in files)),
-            "uploading…")
+            "uploading…",
+            cancel_note="upload cancelled before transfer (filesystem untouched)",
+            uncancel_marker="Transferring", lock_status="uploading (writing)…")
 
     def _lua_list(self):
         self._run_nodemcu(["file", "list"],
                           "\n==> Listing files on the NodeMCU filesystem\n",
-                          "listing…")
+                          "listing…", cancel_note="list cancelled")
 
     def _lua_format(self):
         if not messagebox.askyesno(
@@ -1219,7 +1258,9 @@ class FlasherApp:
             return
         self._run_nodemcu(["file", "format"],
                           "\n==> Formatting the NodeMCU filesystem\n",
-                          "formatting…")
+                          "formatting…",
+                          cancel_note="format cancelled (a format already sent "
+                                      "still completes on the device)")
 
     def _apply_settings(self, s):
         """Restore remembered choices, best-effort: unknown or stale values

@@ -18,9 +18,10 @@ shows the serial output in one place, so you don't need separate
   reopens the monitor to show the boot log — so no "port busy" clash. **Chip
   info** probes the connected board (chip type, MAC, flash size — handy before
   choosing an image). **Cancel**
-  aborts a flash while it's still trying to connect (e.g. wrong port / board not
-  in bootloader); it locks out the moment writing starts, so you can't corrupt a
-  flash mid-write.
+  aborts a flash, chip probe or NodeMCU operation while it's still safe (e.g.
+  stuck at "Connecting…" on the wrong port); it locks out the moment writing
+  starts — a flash locks at chip detection, an upload at file transfer — so you
+  can't corrupt anything mid-write.
 - **NodeMCU Lua tab** (optional) — for boards running NodeMCU-Lua firmware,
   upload `init.lua` & data files into the device filesystem (compile, run, or
   restart after), list files, or format the filesystem. Uses the bundled
