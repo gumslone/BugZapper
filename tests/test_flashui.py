@@ -98,6 +98,18 @@ class TestHelpers(unittest.TestCase):
             with self.assertRaises(ValueError):
                 flashui.parse_offset(bad)
 
+    def test_suggest_offset(self):
+        self.assertEqual(flashui.suggest_offset("bootloader.bin"), "0x1000")
+        self.assertEqual(flashui.suggest_offset("BOOTLOADER_dio_40m.bin"), "0x1000")
+        self.assertEqual(flashui.suggest_offset("/a/b/partitions.bin"), "0x8000")
+        self.assertEqual(flashui.suggest_offset("partition-table.bin"), "0x8000")
+        self.assertEqual(flashui.suggest_offset("boot_app0.bin"), "0xe000")
+        self.assertEqual(flashui.suggest_offset("ota_data_initial.bin"), "0xe000")
+        # generic names must NOT get an ESP32 hint (could be an ESP8266 image)
+        self.assertIsNone(flashui.suggest_offset("app.bin"))
+        self.assertIsNone(flashui.suggest_offset("firmware-v1.2.bin"))
+        self.assertIsNone(flashui.suggest_offset("myapp.bin"))
+
     def test_files_in_folder_glob_metachars_in_path(self):
         # A folder whose path contains glob metacharacters must still match its
         # files — glob.escape guards against reading them as a pattern. Use only
@@ -135,8 +147,9 @@ class TestGuiSmoke(unittest.TestCase):
         app = flashui.FlasherApp(root)
         root.update_idletasks()
         self.assertIsNone(app.monitor_ser)
-        self.assertEqual(len(app.action_btns), 5)
-        for attr in ("lua_files", "upload_btn", "flash_btn", "monitor_btn"):
+        self.assertEqual(len(app.action_btns), 6)
+        for attr in ("lua_files", "upload_btn", "flash_btn", "monitor_btn",
+                     "chipinfo_btn"):
             self.assertTrue(hasattr(app, attr))
         root.destroy()
 
@@ -171,6 +184,21 @@ class TestGuiSmoke(unittest.TestCase):
             app._clear_parts()
             self.assertEqual(app._parts, [])
             self.assertEqual(app.parts_box.size(), 0)
+            # a recognizable ESP32 part at an odd offset logs a hint but is
+            # still queued at the offset the user chose
+            bl = os.path.join(d, "bootloader.bin")
+            open(bl, "w").close()
+            app.firmware.set(bl)
+            app.fw_offset.delete(0, "end")
+            app.fw_offset.insert(0, "0x0")
+            while not app.q.empty():  # drop earlier messages
+                app.q.get_nowait()
+            app._add_part()
+            msgs = []
+            while not app.q.empty():
+                msgs.append(app.q.get_nowait())
+            self.assertTrue(any("hint:" in m and "0x1000" in m for m in msgs))
+            self.assertEqual(app._parts, [("0x0", bl)])
         root.destroy()
 
     def test_lua_add_paths_dedupes_and_skips_non_files(self):

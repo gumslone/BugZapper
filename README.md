@@ -15,7 +15,9 @@ shows the serial output in one place, so you don't need separate
   flash mode / erase, flash, and a built-in serial monitor (line-numbered log,
   ANSI colors, live baud switching, send-to-serial, save / live-log to file).
   After a flash it
-  reopens the monitor to show the boot log — so no "port busy" clash. **Cancel**
+  reopens the monitor to show the boot log — so no "port busy" clash. **Chip
+  info** probes the connected board (chip type, MAC, flash size — handy before
+  choosing an image). **Cancel**
   aborts a flash while it's still trying to connect (e.g. wrong port / board not
   in bootloader); it locks out the moment writing starts, so you can't corrupt a
   flash mid-write.

@@ -106,6 +106,24 @@ def parse_offset(text):
     return off
 
 
+# Conventional ESP32 image layout, keyed by tell-tale part names. Used only for
+# a hint in the log — never to silently override the offset the user chose.
+# Deliberately no entry for the app image: names like "app"/"firmware" are too
+# generic (an ESP8266 build called myapp.bin must not get an ESP32 hint).
+ESP32_PART_OFFSETS = (("bootloader", "0x1000"), ("partition", "0x8000"),
+                      ("boot_app0", "0xe000"), ("ota_data", "0xe000"))
+
+
+def suggest_offset(filename):
+    """The conventional ESP32 offset for a part named like filename, or None
+    when the name isn't a recognizable part."""
+    name = os.path.basename(filename).lower()
+    for key, off in ESP32_PART_OFFSETS:
+        if key in name:
+            return off
+    return None
+
+
 def tool_env():
     """Env for running the bundled tools (esptool, nodemcu-uploader): bundled
     pyserial on PYTHONPATH, and NO_COLOR (we render/strip ANSI ourselves)."""
@@ -195,7 +213,8 @@ class FlasherApp:
         self._build_send()
         # Action buttons disabled while an external tool (esptool / uploader) runs.
         self.action_btns = [self.flash_btn, self.monitor_btn, self.upload_btn,
-                            self.lualist_btn, self.luaformat_btn]
+                            self.lualist_btn, self.luaformat_btn,
+                            self.chipinfo_btn]
         self._refresh_ports(select_first=True)
         self._refresh_firmware()
 
@@ -238,6 +257,11 @@ class FlasherApp:
         self.logfile_btn = ttk.Button(row, text="● Log to file",
                                       command=self._toggle_logfile)
         self.logfile_btn.pack(side="left", padx=6)
+        # Probe the connected board (chip type, MAC, flash size) via esptool
+        # flash_id — answers "ESP8266 or ESP32, and how big is the flash?"
+        self.chipinfo_btn = ttk.Button(row, text="Chip info",
+                                       command=self._chip_info)
+        self.chipinfo_btn.pack(side="left")
         self.status = ttk.Label(row, text="ready", foreground="#1FA67A")
         self.status.pack(side="right")
 
@@ -801,6 +825,48 @@ class FlasherApp:
         finally:
             self._proc = None
 
+    # ---- chip probe ---------------------------------------------------------
+    def _chip_info(self):
+        """Read chip type / MAC / flash size off the connected board (esptool
+        flash_id). Non-destructive; esptool times out by itself if the board
+        isn't in bootloader mode."""
+        if self.busy:
+            return
+        port = self.port.get()
+        if not port:
+            self._emit("! no serial port selected\n")
+            return
+        reconnect = self._begin_tool("probing…")
+        threading.Thread(target=self._chip_info_worker,
+                         args=(port, self.baud.get(), reconnect),
+                         daemon=True).start()
+
+    def _chip_info_worker(self, port, baud, reconnect):
+        rc = 1
+        try:
+            esptool = resolve_esptool()
+            if not esptool:
+                self._emit("! no working esptool found. Install: brew install esptool\n")
+            else:
+                self._emit("\n==> Reading chip info\n")
+                rc = self._pump(esptool + ["--port", port, "--baud", baud,
+                                           "flash_id"])
+        except Exception as e:  # never leave the UI stuck busy
+            self._emit(f"\n! error: {e}\n")
+        self.root.after(0, self._chip_info_done, rc, reconnect)
+
+    def _chip_info_done(self, rc, reconnect):
+        self._end_tool()
+        if rc == 0:
+            self._set_status("chip info ✓", "#1FA67A")
+        else:
+            self._emit(f"\n! chip probe failed (exit {rc}). Is the board in "
+                       "bootloader mode and the port free?\n")
+            self._set_status("probe failed", "#d9534f")
+        if reconnect:
+            # the probe is read-only, so restore the monitor even on failure
+            self._start_monitor()
+
     # ---- flashing -----------------------------------------------------------
     def _add_part(self):
         """Queue Firmware@Offset as one part of a multi-file image (ESP32 ships
@@ -818,6 +884,12 @@ class FlasherApp:
         if any(o == off for o, _ in self._parts):
             self._emit(f"! a part at offset {off} is already queued\n")
             return
+        # Recognizable ESP32 part at an unconventional offset? Hint, don't
+        # override — the user's choice always wins in a flasher.
+        hint = suggest_offset(fw)
+        if hint and int(hint, 0) != int(off, 0):
+            self._emit(f"hint: {os.path.basename(fw)} is conventionally flashed "
+                       f"at {hint} (you queued it at {off})\n")
         self._parts.append((off, fw))
         self.parts_box.insert("end", f"{off}  {os.path.basename(fw)}")
 
