@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""BugZapper — a small Tkinter GUI to flash ESP8266/ESP8285 firmware, upload
-NodeMCU Lua files, and watch the serial output, in one window (no separate
-PyFlasher + CoolTerm + nodemcu-uploader).
+"""BugZapper — a small Tkinter GUI to flash ESP8266/ESP8285/ESP32 firmware,
+upload NodeMCU Lua files, and watch the serial output, in one window (no
+separate PyFlasher + CoolTerm + nodemcu-uploader).
 
 Launched by bugzapper.sh (macOS/Linux) or bugzapper.bat (Windows), which pick a
 python3 that has tkinter. Flashing uses the bundled esptool, the optional NodeMCU
@@ -95,6 +95,15 @@ def files_in_folder(folder, exts):
     tokens = [t.lstrip("*").lstrip(".") for t in raw]  # *.lua / .lua / lua -> lua
     return [p for p in files
             if os.path.splitext(p)[1].lstrip(".").lower() in tokens]
+
+
+def parse_offset(text):
+    """Normalize a flash offset typed into the GUI ('0x1000', '4096', blank →
+    0x0). Returns the trimmed string — esptool accepts hex or decimal — and
+    raises ValueError if it isn't a number."""
+    off = (text or "").strip() or "0x0"
+    int(off, 0)  # validate (0x-hex or decimal)
+    return off
 
 
 def tool_env():
@@ -254,6 +263,10 @@ class FlasherApp:
         self.mode = ttk.Combobox(row, state="readonly", width=6, values=MODES)
         self.mode.set("dio")
         self.mode.pack(side="left", padx=(4, 16))
+        ttk.Label(row, text="Offset").pack(side="left")
+        self.fw_offset = ttk.Entry(row, width=8)
+        self.fw_offset.insert(0, "0x0")
+        self.fw_offset.pack(side="left", padx=(4, 16))
         self.erase = tk.BooleanVar(value=False)
         ttk.Checkbutton(row, text="Erase flash (wipes all data)",
                         variable=self.erase).pack(side="left")
@@ -267,6 +280,27 @@ class FlasherApp:
         self.cancel_btn = ttk.Button(btns, text="✕ Cancel", command=self._cancel,
                                      state="disabled")
         self.cancel_btn.pack(side="left", padx=6)
+        ttk.Button(btns, text="+ Add part",
+                   command=self._add_part).pack(side="left", padx=(16, 0))
+
+        # Multi-part images (ESP32: bootloader @0x1000, partition table @0x8000,
+        # app @0x10000). "+ Add part" queues Firmware@Offset here; a non-empty
+        # list is flashed together in one esptool call, otherwise the single
+        # Firmware file above is flashed at Offset.
+        parts = ttk.Frame(f)
+        parts.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        parts.columnconfigure(0, weight=1)
+        ttk.Label(parts, text="Parts (ESP32 multi-file image — empty = just the "
+                              "file above):").grid(row=0, column=0, columnspan=2,
+                                                   sticky="w")
+        self.parts_box = tk.Listbox(parts, height=3, activestyle="none",
+                                    selectmode="extended")
+        self.parts_box.grid(row=1, column=0, sticky="ew", pady=(2, 0))
+        pb = ttk.Frame(parts)
+        pb.grid(row=1, column=1, sticky="n", padx=(6, 0))
+        ttk.Button(pb, text="Remove", command=self._remove_part, width=8).pack(fill="x")
+        ttk.Button(pb, text="Clear", command=self._clear_parts, width=8).pack(fill="x", pady=(4, 0))
+        self._parts = []  # [(offset_str, full_path)]; parts_box shows basenames
 
     def _build_upload_tab(self, nb):
         """Optional tab: upload Lua/data files into the NodeMCU filesystem via
@@ -768,16 +802,59 @@ class FlasherApp:
             self._proc = None
 
     # ---- flashing -----------------------------------------------------------
+    def _add_part(self):
+        """Queue Firmware@Offset as one part of a multi-file image (ESP32 ships
+        bootloader / partition table / app at different offsets)."""
+        fw = self.firmware.get()
+        if not fw or not os.path.isfile(fw):
+            self._emit(f"! firmware not found: {fw}\n")
+            return
+        try:
+            off = parse_offset(self.fw_offset.get())
+        except ValueError:
+            self._emit(f"! bad offset {self.fw_offset.get()!r} "
+                       "(use hex like 0x10000, or decimal)\n")
+            return
+        if any(o == off for o, _ in self._parts):
+            self._emit(f"! a part at offset {off} is already queued\n")
+            return
+        self._parts.append((off, fw))
+        self.parts_box.insert("end", f"{off}  {os.path.basename(fw)}")
+
+    def _remove_part(self):
+        for i in reversed(self.parts_box.curselection()):
+            del self._parts[i]
+            self.parts_box.delete(i)
+
+    def _clear_parts(self):
+        self._parts.clear()
+        self.parts_box.delete(0, "end")
+
     def _flash(self):
         if self.busy:
             return
         port = self.port.get()
-        fw = self.firmware.get()
         if not port:
             self._emit("! no serial port selected\n")
             return
-        if not fw or not os.path.isfile(fw):
-            self._emit(f"! firmware not found: {fw}\n")
+        if self._parts:
+            # multi-part image: flash the queued parts, lowest offset first
+            parts = sorted(self._parts, key=lambda t: int(t[0], 0))
+        else:
+            fw = self.firmware.get()
+            if not fw or not os.path.isfile(fw):
+                self._emit(f"! firmware not found: {fw}\n")
+                return
+            try:
+                off = parse_offset(self.fw_offset.get())
+            except ValueError:
+                self._emit(f"! bad offset {self.fw_offset.get()!r} "
+                           "(use hex like 0x10000, or decimal)\n")
+                return
+            parts = [(off, fw)]
+        missing = [p for _, p in parts if not os.path.isfile(p)]
+        if missing:
+            self._emit("! firmware not found: %s\n" % ", ".join(missing))
             return
         # esptool resolution runs subprocesses, so do it in the worker (below) to
         # keep the UI responsive. Snapshot the widget values here on the UI thread.
@@ -789,11 +866,11 @@ class FlasherApp:
         self.cancel_btn.configure(state="normal")
         threading.Thread(
             target=self._run_flash,
-            args=(port, fw, self.baud.get(), self.mode.get(), self.erase.get(),
-                  reconnect),
+            args=(port, parts, self.baud.get(), self.mode.get(),
+                  self.erase.get(), reconnect),
             daemon=True).start()
 
-    def _run_flash(self, port, fw, baud, mode, erase, reconnect):
+    def _run_flash(self, port, parts, baud, mode, erase, reconnect):
         # try/finally guarantees _flash_done runs (re-enabling the buttons) even
         # if resolution or _pump raises unexpectedly.
         rc = 1
@@ -806,9 +883,11 @@ class FlasherApp:
                                  "-fm", mode, "-fs", "detect"]
                 if erase:
                     cmd.append("-e")
-                cmd += ["0x0", fw]
-                self._emit("\n==> Flashing %s\n    %s\n"
-                           % (os.path.basename(fw), " ".join(cmd)))
+                for off, path in parts:
+                    cmd += [off, path]
+                names = ", ".join("%s @ %s" % (os.path.basename(p), o)
+                                  for o, p in parts)
+                self._emit("\n==> Flashing %s\n    %s\n" % (names, " ".join(cmd)))
                 # "Chip is" is esptool's first line after a successful connect,
                 # before any erase/write — the safe cutoff for cancellation.
                 rc = self._pump(cmd, uncancel_marker="Chip is",

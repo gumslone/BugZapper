@@ -89,6 +89,15 @@ class TestHelpers(unittest.TestCase):
             self.assertEqual(base(flashui.files_in_folder(d, "")), sorted(names))
             self.assertNotIn("deep.lua", base(flashui.files_in_folder(d, "lua")))
 
+    def test_parse_offset(self):
+        self.assertEqual(flashui.parse_offset("0x1000"), "0x1000")
+        self.assertEqual(flashui.parse_offset(" 4096 "), "4096")
+        self.assertEqual(flashui.parse_offset(""), "0x0")
+        self.assertEqual(flashui.parse_offset(None), "0x0")
+        for bad in ("banana", "0x", "1000h"):
+            with self.assertRaises(ValueError):
+                flashui.parse_offset(bad)
+
     def test_files_in_folder_glob_metachars_in_path(self):
         # A folder whose path contains glob metacharacters must still match its
         # files — glob.escape guards against reading them as a pattern. Use only
@@ -129,6 +138,39 @@ class TestGuiSmoke(unittest.TestCase):
         self.assertEqual(len(app.action_btns), 5)
         for attr in ("lua_files", "upload_btn", "flash_btn", "monitor_btn"):
             self.assertTrue(hasattr(app, attr))
+        root.destroy()
+
+    def test_add_remove_flash_parts(self):
+        import os
+        import tempfile
+        import tkinter as tk
+        root = tk.Tk()
+        app = flashui.FlasherApp(root)
+        with tempfile.TemporaryDirectory() as d:
+            f1 = os.path.join(d, "boot.bin")
+            f2 = os.path.join(d, "app.bin")
+            open(f1, "w").close()
+            open(f2, "w").close()
+            app.firmware.set(f1)
+            app.fw_offset.delete(0, "end")
+            app.fw_offset.insert(0, "0x1000")
+            app._add_part()
+            app.firmware.set(f2)
+            app.fw_offset.delete(0, "end")
+            app.fw_offset.insert(0, "0x10000")
+            app._add_part()
+            self.assertEqual(app._parts, [("0x1000", f1), ("0x10000", f2)])
+            self.assertEqual(app.parts_box.size(), 2)
+            # duplicate offset is rejected
+            app._add_part()
+            self.assertEqual(len(app._parts), 2)
+            # remove keeps list and box in sync
+            app.parts_box.selection_set(0)
+            app._remove_part()
+            self.assertEqual(app._parts, [("0x10000", f2)])
+            app._clear_parts()
+            self.assertEqual(app._parts, [])
+            self.assertEqual(app.parts_box.size(), 0)
         root.destroy()
 
     def test_lua_add_paths_dedupes_and_skips_non_files(self):

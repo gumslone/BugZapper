@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""BugZapper CLI — flash an ESP8266/ESP8285 firmware .bin over serial.
+"""BugZapper CLI — flash ESP8266/ESP8285/ESP32 firmware .bin(s) over serial.
 
 A cross-platform (Windows / macOS / Linux) twin of flash.sh: same behavior, but
 pure-python so it runs anywhere python3 does. esptool + pyserial are bundled in
@@ -10,10 +10,13 @@ vendor/, so nothing needs installing.
   python3 flash.py -p COM5 -b 460800    # explicit port + baud (COMx on Windows)
   python3 flash.py -f build/app.bin
   python3 flash.py -l                   # list detected serial ports
+  python3 flash.py -f 0x1000:boot.bin -f 0x8000:partitions.bin \\
+                   -f 0x10000:app.bin   # ESP32: multi-part image at offsets
 """
 import argparse
 import glob
 import os
+import re
 import subprocess
 import sys
 
@@ -37,16 +40,33 @@ def list_ports():
     return sorted(p.device for p in comports())
 
 
-def build_flash_cmd(esptool, port, baud, mode, erase, fw):
-    """esptool write_flash argv. Short flags (-fm/-fs/-e) + write_flash work on
-    esptool 4.x and 5.x; --after is omitted because its default is a hard reset
-    in both (the long spelling differs: hard_reset vs hard-reset), so the device
-    still reboots into the new firmware."""
+# A -f spec's offset prefix: 0x-hex or decimal. Anything else (a Windows drive
+# letter like C:, a plain path) is not an offset.
+OFFSET_RE = re.compile(r"^(0[xX][0-9a-fA-F]+|\d+)$")
+
+
+def parse_part(spec):
+    """Split a -f spec into (offset, file): '0x1000:boot.bin' -> ('0x1000',
+    'boot.bin'); a plain path (including Windows 'C:\\...' — a drive letter is
+    not a number) flashes at 0x0."""
+    head, sep, tail = spec.partition(":")
+    if sep and tail and OFFSET_RE.match(head):
+        return head, tail
+    return "0x0", spec
+
+
+def build_flash_cmd(esptool, port, baud, mode, erase, parts):
+    """esptool write_flash argv for one or more (offset, file) parts. Short
+    flags (-fm/-fs/-e) + write_flash work on esptool 4.x and 5.x; --after is
+    omitted because its default is a hard reset in both (the long spelling
+    differs: hard_reset vs hard-reset), so the device still reboots into the
+    new firmware."""
     cmd = esptool + ["--port", port, "--baud", str(baud),
                      "write_flash", "-fm", mode, "-fs", "detect"]
     if erase:
         cmd.append("-e")
-    cmd += ["0x0", fw]
+    for off, path in parts:
+        cmd += [off, path]
     return cmd
 
 
@@ -72,10 +92,13 @@ def resolve_esptool():
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Flash an ESP8266/ESP8285 firmware .bin over serial.")
+        description="Flash ESP8266/ESP8285/ESP32 firmware .bin(s) over serial.")
     ap.add_argument("-p", "--port", default=os.environ.get("ESPTOOL_PORT"),
                     help="serial port (default: first detected, or $ESPTOOL_PORT)")
-    ap.add_argument("-f", "--file", help="firmware .bin (default: first ./firmware/*.bin)")
+    ap.add_argument("-f", "--file", action="append", metavar="[OFFSET:]FILE",
+                    help="firmware .bin, optionally prefixed with its flash "
+                         "offset (default 0x0). Repeat for ESP32 multi-part "
+                         "images. Default: first ./firmware/*.bin")
     ap.add_argument("-b", "--baud", default="115200",
                     help="baud rate (default: 115200)")
     ap.add_argument("-m", "--mode", default="dio", choices=["dio", "qio", "dout"],
@@ -107,23 +130,27 @@ def main():
             return 1
         print(f"==> Auto-selected serial port: {port}")
 
-    fw = args.file
-    if not fw:
+    if args.file:
+        # lowest offset first, the conventional bootloader→app order
+        parts = sorted((parse_part(s) for s in args.file),
+                       key=lambda t: int(t[0], 0))
+    else:
         found = sorted(glob.glob(os.path.join("firmware", "*.bin")))
-        fw = found[0] if found else None
-    if not fw:
+        parts = [("0x0", found[0])] if found else []
+    if not parts:
         print("Error: no firmware .bin found in ./firmware. Pass one with -f FILE.",
               file=sys.stderr)
         return 1
-    if not os.path.isfile(fw):
-        print(f"Error: firmware not found: {fw}", file=sys.stderr)
-        return 1
+    for _, path in parts:
+        if not os.path.isfile(path):
+            print(f"Error: firmware not found: {path}", file=sys.stderr)
+            return 1
 
-    print(f"==> Flashing {fw}")
+    print("==> Flashing " + ", ".join(f"{p} @ {o}" for o, p in parts))
     print(f"    port={port} baud={args.baud} mode={args.mode} "
           f"erase={'yes' if args.erase else 'no'}")
 
-    cmd = build_flash_cmd(esptool, port, args.baud, args.mode, args.erase, fw)
+    cmd = build_flash_cmd(esptool, port, args.baud, args.mode, args.erase, parts)
     rc = subprocess.run(cmd, env=tool_env()).returncode
     if rc == 0:
         print("==> Done. The device has been reset into the new firmware.")

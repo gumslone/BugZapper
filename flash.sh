@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Flashes an ESP8266/ESP8285 firmware .bin over serial, using esptool (the same
-# tool NodeMCU PyFlasher drives).
+# Flashes ESP8266/ESP8285/ESP32 firmware .bin(s) over serial, using esptool
+# (the same tool NodeMCU PyFlasher drives).
 #
 # Usage: ./flash.sh [options]
 #   -p PORT    serial port (default: first /dev/cu.usbserial* / *.SLAB* found,
 #              or $ESPTOOL_PORT)
-#   -f FILE    firmware .bin to flash (default: the first ./firmware/*.bin)
+#   -f SPEC    firmware .bin as FILE or OFFSET:FILE (default offset 0x0).
+#              Repeatable — an ESP32 image ships as several parts
+#              (default: the first ./firmware/*.bin at 0x0)
 #   -b BAUD    baud rate: 9600 57600 74880 115200 230400 460800 921600
 #              (default: 115200)
 #   -m MODE    flash mode: dio (default) | qio | dout
@@ -20,6 +22,8 @@ set -euo pipefail
 #   ./flash.sh -e                       # erase all flash, then write
 #   ./flash.sh -p /dev/cu.usbserial-110 -b 460800
 #   ./flash.sh -f build/app.bin
+#   ./flash.sh -f 0x1000:bootloader.bin -f 0x8000:partitions.bin \
+#              -f 0x10000:app.bin       # ESP32 multi-part image
 #
 # esptool: a pure-python esptool + pyserial are bundled in vendor/, so no
 # install is needed — only python3 on PATH. A system esptool (4.x/5.x) is used
@@ -28,8 +32,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 PORT="${ESPTOOL_PORT:-}"
-# default: first .bin in ./firmware (of the current project); -f overrides
-FIRMWARE="$(ls firmware/*.bin 2>/dev/null | sort | head -n1 || true)"
+PARTS=()   # [OFFSET:]FILE specs from -f; default filled in below
 BAUD=115200
 FLASH_MODE=dio
 ERASE=0
@@ -44,12 +47,12 @@ list_ports() {
 while getopts ":p:f:b:m:elh" opt; do
   case "$opt" in
     p) PORT="$OPTARG" ;;
-    f) FIRMWARE="$OPTARG" ;;
+    f) PARTS+=("$OPTARG") ;;
     b) BAUD="$OPTARG" ;;
     m) FLASH_MODE="$OPTARG" ;;
     e) ERASE=1 ;;
     l) list_ports; exit 0 ;;
-    h) sed -n '4,26p' "$0"; exit 0 ;;
+    h) sed -n '4,30p' "$0"; exit 0 ;;
     :) echo "Error: -$OPTARG needs an argument" >&2; exit 1 ;;
     \?) echo "Error: unknown option -$OPTARG (try -h)" >&2; exit 1 ;;
   esac
@@ -93,16 +96,38 @@ if [ -z "$PORT" ]; then
   echo "==> Auto-selected serial port: $PORT"
 fi
 
-if [ -z "$FIRMWARE" ]; then
-  echo "Error: no firmware .bin found in ./firmware. Pass one with -f FILE." >&2
-  exit 1
-fi
-if [ ! -f "$FIRMWARE" ]; then
-  echo "Error: firmware not found: $FIRMWARE" >&2
-  exit 1
+# Default firmware: the first .bin in ./firmware (of the current project).
+if [ ${#PARTS[@]} -eq 0 ]; then
+  DEFAULT_FW="$(ls firmware/*.bin 2>/dev/null | sort | head -n1 || true)"
+  if [ -z "$DEFAULT_FW" ]; then
+    echo "Error: no firmware .bin found in ./firmware. Pass one with -f FILE." >&2
+    exit 1
+  fi
+  PARTS=("$DEFAULT_FW")
 fi
 
-echo "==> Flashing $FIRMWARE"
+# Split each -f spec into offset + file. Only a numeric prefix (0x-hex or
+# decimal) counts as an offset, so plain paths pass through whole.
+WRITE_PAIRS=()
+for spec in "${PARTS[@]}"; do
+  if [[ "$spec" =~ ^(0[xX][0-9a-fA-F]+|[0-9]+):(.+)$ ]]; then
+    OFF="${BASH_REMATCH[1]}"; FILE="${BASH_REMATCH[2]}"
+  else
+    OFF="0x0"; FILE="$spec"
+  fi
+  if [ ! -f "$FILE" ]; then
+    echo "Error: firmware not found: $FILE" >&2
+    exit 1
+  fi
+  WRITE_PAIRS+=("$OFF" "$FILE")
+done
+
+echo "==> Flashing:"
+i=0
+while [ "$i" -lt ${#WRITE_PAIRS[@]} ]; do
+  echo "    ${WRITE_PAIRS[$i]}  ${WRITE_PAIRS[$((i+1))]}"
+  i=$((i+2))
+done
 echo "    port=$PORT baud=$BAUD mode=$FLASH_MODE erase=$([ "$ERASE" = 1 ] && echo yes || echo no)"
 
 # Short flags (-fm/-fs/-e) and the write_flash subcommand work on both esptool
@@ -113,6 +138,6 @@ WRITE_ARGS=(-fm "$FLASH_MODE" -fs detect)
 [ "$ERASE" = 1 ] && WRITE_ARGS+=(-e)
 
 "${ESPTOOL[@]}" --port "$PORT" --baud "$BAUD" \
-  write_flash "${WRITE_ARGS[@]}" 0x0 "$FIRMWARE"
+  write_flash "${WRITE_ARGS[@]}" "${WRITE_PAIRS[@]}"
 
 echo "==> Done. The device has been reset into the new firmware."

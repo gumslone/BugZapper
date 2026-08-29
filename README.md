@@ -1,8 +1,8 @@
 # ⚡ BugZapper
 
-A tiny, dependency-light flasher for **ESP8266 / ESP8285** boards — a GUI **and**
-a CLI, on **Windows, macOS and Linux** — that flashes firmware *and* shows the
-serial output in one place, so you don't need separate
+A tiny, dependency-light flasher for **ESP8266 / ESP8285 / ESP32** boards — a
+GUI **and** a CLI, on **Windows, macOS and Linux** — that flashes firmware *and*
+shows the serial output in one place, so you don't need separate
 [NodeMCU PyFlasher](https://github.com/marcelstoer/nodemcu-pyflasher)
 + [CoolTerm](https://freeware.the-meiers.org/) windows.
 
@@ -23,6 +23,11 @@ serial output in one place, so you don't need separate
   upload `init.lua` & data files into the device filesystem (compile, run, or
   restart after), list files, or format the filesystem. Uses the bundled
   [`nodemcu-uploader`](https://github.com/kmpm/nodemcu-uploader) — no install.
+- **ESP32 multi-part images** — a normal ESP32 build is several files at
+  different offsets (bootloader `0x1000`, partition table `0x8000`, app
+  `0x10000`). Queue them in the GUI's **Parts** list (Firmware + Offset →
+  "+ Add part"), or repeat `-f OFFSET:FILE` on the CLI — they're flashed in one
+  esptool call. Single-file (merged/factory) images still just flash at `0x0`.
 - **CLI (`flash.py`, or `flash.sh` on Unix)** — the same flashing as a one-liner;
   version-robust across esptool 4.x/5.x.
 - **Drop-in** — auto-detects `./firmware/*.bin`; customize via env vars (below).
@@ -45,6 +50,8 @@ bugzapper.bat                  # Windows (same args / env vars)
 python3 flash.py               # flash the first ./firmware/*.bin to the auto-found port
 python3 flash.py -f build/app.bin -e   # specific file, erase first
 python3 flash.py -p COM5 -b 460800     # explicit port (COMx on Windows) + baud
+python3 flash.py -f 0x1000:boot.bin -f 0x8000:partitions.bin -f 0x10000:app.bin
+                               # ESP32 multi-part image (repeat -f with offsets)
 python3 flash.py -h            # all options
 ./flash.sh                     # macOS / Linux bash twin of flash.py
 ```
@@ -70,9 +77,13 @@ submodule** and call it via a thin wrapper that sets `BUGZAPPER_TITLE` /
 
 ## Notes
 
-- The bundled esptool is **2.8** (single-file, pure-python) — ideal for
-  ESP8266/ESP8285. For newer ESP32 variants, install a current `esptool` on
-  `PATH` and BugZapper will use it.
+- The bundled esptool is **2.8** (single-file, pure-python) — it speaks
+  ESP8266/ESP8285 and **classic ESP32**. Newer variants (S2/S3/C3/C6…) need a
+  current `esptool` on `PATH` (`pipx install esptool`); BugZapper detects and
+  uses it automatically.
+- A bare ESP32 `app.bin` alone won't boot — flash its bootloader / partition
+  table parts too (Parts list in the GUI, repeated `-f OFFSET:FILE` on the CLI),
+  or use a merged `*.factory.bin` at `0x0`.
 - The serial monitor uses the bundled `pyserial` (`serial.Serial`), so it works
   the same on Windows, macOS and Linux — no `stty`/`/dev` assumptions.
 
