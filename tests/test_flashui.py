@@ -167,6 +167,31 @@ class TestHelpers(unittest.TestCase):
             got = sorted(os.path.basename(p) for p in flashui.files_in_folder(d, "lua"))
             self.assertEqual(got, ["app.lua", "init.lua"])
 
+    def test_settings_roundtrip_and_corruption(self):
+        import json
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "sub", "settings.json")
+            old = os.environ.get("BUGZAPPER_SETTINGS")
+            os.environ["BUGZAPPER_SETTINGS"] = path
+            try:
+                self.assertEqual(flashui.settings_path(), path)
+                self.assertEqual(flashui.load_settings(), {})  # missing -> {}
+                flashui.save_settings({"baud": "460800"})  # creates parent dir
+                self.assertEqual(flashui.load_settings(), {"baud": "460800"})
+                with open(path, "w") as fh:
+                    fh.write("{not json")
+                self.assertEqual(flashui.load_settings(), {})  # corrupt -> {}
+                with open(path, "w") as fh:
+                    json.dump(["a", "list"], fh)
+                self.assertEqual(flashui.load_settings(), {})  # non-dict -> {}
+            finally:
+                if old is None:
+                    os.environ.pop("BUGZAPPER_SETTINGS", None)
+                else:
+                    os.environ["BUGZAPPER_SETTINGS"] = old
+
     def test_firmware_dir_env_override(self):
         old_argv, old_env = sys.argv, os.environ.get("BUGZAPPER_FW_DIR")
         try:
@@ -242,6 +267,39 @@ class TestGuiSmoke(unittest.TestCase):
             self.assertTrue(any("hint:" in m and "0x1000" in m for m in msgs))
             self.assertEqual(app._parts, [("0x0", bl)])
         root.destroy()
+
+    def test_settings_restore_and_save(self):
+        import json
+        import os
+        import tempfile
+        import tkinter as tk
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "settings.json")
+            old = os.environ.get("BUGZAPPER_SETTINGS")
+            os.environ["BUGZAPPER_SETTINGS"] = path
+            try:
+                with open(path, "w") as fh:
+                    json.dump({"baud": "460800", "mode": "qio",
+                               "line_ending": "CR+NL", "lua_verify": "sha1",
+                               "baudX": "junk-ignored"}, fh)
+                root = tk.Tk()
+                app = flashui.FlasherApp(root)
+                self.assertEqual(app.baud.get(), "460800")
+                self.assertEqual(app.mode.get(), "qio")
+                self.assertEqual(app.line_ending.get(), "CR+NL")
+                self.assertEqual(app.lua_verify.get(), "sha1")
+                # closing writes the current values back
+                app.baud.set("9600")
+                app._on_close()  # also destroys root
+                saved = json.load(open(path))
+                self.assertEqual(saved["baud"], "9600")
+                self.assertEqual(saved["mode"], "qio")
+                self.assertIn("geometry", saved)
+            finally:
+                if old is None:
+                    os.environ.pop("BUGZAPPER_SETTINGS", None)
+                else:
+                    os.environ["BUGZAPPER_SETTINGS"] = old
 
     def test_advanced_section_collapsed_by_default(self):
         import os

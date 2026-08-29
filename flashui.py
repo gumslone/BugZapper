@@ -16,6 +16,7 @@ Drop-in for any project. Customize without editing this file:
   argv[1]           a firmware folder, overrides BUGZAPPER_FW_DIR
 """
 import glob
+import json
 import os
 import re
 import subprocess
@@ -150,6 +151,39 @@ def scan_esp32_folder(folder):
     return parts, unknown + leftovers
 
 
+def settings_path():
+    """Per-user settings file. $BUGZAPPER_SETTINGS overrides (also used by the
+    tests to stay isolated); otherwise the platform's config home."""
+    if os.environ.get("BUGZAPPER_SETTINGS"):
+        return os.environ["BUGZAPPER_SETTINGS"]
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(base, "bugzapper", "settings.json")
+
+
+def load_settings():
+    """Saved GUI settings, or {} when missing/corrupt — never fatal."""
+    try:
+        with open(settings_path()) as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_settings(data):
+    """Best-effort write — a read-only config dir must never break closing."""
+    path = settings_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            json.dump(data, fh, indent=2)
+    except OSError:
+        pass
+
+
 def tool_env():
     """Env for running the bundled tools (esptool, nodemcu-uploader): bundled
     pyserial on PYTHONPATH, and NO_COLOR (we render/strip ANSI ourselves)."""
@@ -243,6 +277,7 @@ class FlasherApp:
                             self.chipinfo_btn]
         self._refresh_ports(select_first=True)
         self._refresh_firmware()
+        self._apply_settings(load_settings())  # after ports, so a saved port wins
 
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(50, self._drain)
@@ -1186,7 +1221,37 @@ class FlasherApp:
                           "\n==> Formatting the NodeMCU filesystem\n",
                           "formatting…")
 
+    def _apply_settings(self, s):
+        """Restore remembered choices, best-effort: unknown or stale values
+        (a baud not in the list, an unplugged port) are silently ignored.
+        Deliberately NOT restored: erase, offset, parts — per-flash decisions
+        that would be dangerous to carry across sessions."""
+        if s.get("baud") in BAUDS:
+            self.baud.set(s["baud"])
+        if s.get("mode") in MODES:
+            self.mode.set(s["mode"])
+        if s.get("line_ending") in LINE_ENDINGS:
+            self.line_ending.set(s["line_ending"])
+        if s.get("lua_verify") in ("none", "raw", "sha1"):
+            self.lua_verify.set(s["lua_verify"])
+        if s.get("port") in (self.port["values"] or ()):
+            self.port.set(s["port"])
+        geo = s.get("geometry", "")
+        if isinstance(geo, str) and re.fullmatch(r"\d+x\d+([+-]\d+[+-]\d+)?", geo):
+            try:
+                self.root.geometry(geo)
+            except tk.TclError:
+                pass
+
     def _on_close(self):
+        save_settings({
+            "port": self.port.get(),
+            "baud": self.baud.get(),
+            "mode": self.mode.get(),
+            "line_ending": self.line_ending.get(),
+            "lua_verify": self.lua_verify.get(),
+            "geometry": self.root.winfo_geometry(),
+        })
         self._stop_monitor()
         if self.logfile is not None:
             try:

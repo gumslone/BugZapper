@@ -73,6 +73,11 @@ Homebrew install it (`apt install python3-tk`, or `brew install python-tk@3.13`)
 | `BUGZAPPER_TITLE` | GUI window title | `BugZapper` |
 | `BUGZAPPER_ICON`  | path to a PNG window icon | `./icon.png` |
 | `BUGZAPPER_FW_DIR`| folder of `.bin` files | `./firmware`, else cwd |
+| `BUGZAPPER_SETTINGS`| where remembered GUI settings are stored | `~/.config/bugzapper/settings.json` (`%APPDATA%\bugzapper\` on Windows) |
+
+The GUI remembers your port, baud, flash mode, line ending, verify choice and
+window size between runs. Per-flash decisions (erase, offset, parts) are
+deliberately **not** remembered.
 
 ## Add to your project
 
