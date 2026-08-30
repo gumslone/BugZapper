@@ -65,16 +65,31 @@ PLIST
 
 # ---- launcher ---------------------------------------------------------------
 # Finder launches with a minimal PATH (no Homebrew), so absolute candidates
-# matter. Same probe idea as bugzapper.sh: pick the first python3 that can
-# actually import tkinter.
+# matter. Two-pass probe: prefer a python whose Tk is 8.6+ — Apple's ancient
+# system Tk 8.5 (/usr/bin/python3) renders a BLANK window on modern macOS —
+# and only fall back to any tkinter at all.
 cat > "$APP/Contents/MacOS/launcher" <<'LAUNCH'
 #!/bin/bash
 RES="$(cd "$(dirname "$0")/../Resources" && pwd)"
-for py in python3 /usr/bin/python3 /opt/homebrew/bin/python3 /usr/local/bin/python3 \
-          /opt/homebrew/opt/python-tk@3.13/libexec/bin/python3 \
-          /usr/local/opt/python-tk@3.13/libexec/bin/python3 \
-          python3.13 python3.12 python3.11 python3.10; do
-  if command -v "$py" >/dev/null 2>&1 && "$py" -c "import tkinter" >/dev/null 2>&1; then
+CANDS=(python3 python3.13 python3.12 python3.11 python3.10
+       /opt/homebrew/bin/python3 /opt/homebrew/bin/python3.13
+       /opt/homebrew/bin/python3.12 /opt/homebrew/bin/python3.11
+       /opt/homebrew/bin/python3.10
+       /usr/local/bin/python3 /usr/local/bin/python3.13
+       /usr/local/bin/python3.12 /usr/local/bin/python3.11
+       /usr/local/bin/python3.10
+       /opt/homebrew/opt/python-tk@3.13/libexec/bin/python3
+       /usr/local/opt/python-tk@3.13/libexec/bin/python3
+       /usr/bin/python3)
+for py in "${CANDS[@]}"; do
+  command -v "$py" >/dev/null 2>&1 || continue
+  if "$py" -c 'import tkinter as t, sys; sys.exit(0 if t.TkVersion >= 8.6 else 1)' >/dev/null 2>&1; then
+    exec "$py" "$RES/flashui.py"
+  fi
+done
+for py in "${CANDS[@]}"; do   # last resort: old Tk beats no app at all
+  command -v "$py" >/dev/null 2>&1 || continue
+  if "$py" -c 'import tkinter' >/dev/null 2>&1; then
     exec "$py" "$RES/flashui.py"
   fi
 done

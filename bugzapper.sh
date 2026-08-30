@@ -19,10 +19,22 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Find a python3 that actually has tkinter (Homebrew's plain python3 usually
 # doesn't; python-tk@<ver> provides it). Test by importing, not by version.
-for py in python3 python3.13 python3.12 python3.11 python3.10 python3.9 \
-          /usr/local/opt/python@3.10/bin/python3.10 \
-          /opt/homebrew/opt/python@3.10/bin/python3.10; do
-  if command -v "$py" >/dev/null 2>&1 && "$py" -c "import tkinter" >/dev/null 2>&1; then
+# Two passes: prefer a Tk 8.6+ python — Apple's ancient system Tk 8.5
+# (/usr/bin/python3) renders a BLANK window on modern macOS — then fall back
+# to any tkinter at all.
+CANDS=(python3 python3.13 python3.12 python3.11 python3.10 python3.9
+       /usr/local/opt/python@3.10/bin/python3.10
+       /opt/homebrew/opt/python@3.10/bin/python3.10
+       /usr/bin/python3)
+for py in "${CANDS[@]}"; do
+  command -v "$py" >/dev/null 2>&1 || continue
+  if "$py" -c 'import tkinter as t, sys; sys.exit(0 if t.TkVersion >= 8.6 else 1)' >/dev/null 2>&1; then
+    exec "$py" "$DIR/flashui.py" "$@"
+  fi
+done
+for py in "${CANDS[@]}"; do   # last resort: old Tk beats no app at all
+  command -v "$py" >/dev/null 2>&1 || continue
+  if "$py" -c "import tkinter" >/dev/null 2>&1; then
     exec "$py" "$DIR/flashui.py" "$@"
   fi
 done

@@ -1287,6 +1287,21 @@ class FlasherApp:
 def main():
     root = tk.Tk()
     FlasherApp(root)
+    # Script/bundle-launched Tk apps often start WITHOUT focus on macOS — the
+    # exec'd interpreter, not our bundle, owns the process identity, so the
+    # window opens behind everything and the app looks dead. Surface it once
+    # the window is actually mapped (doing this before mainloop is silently
+    # dropped on macOS): lift + brief topmost, then release.
+    def _surface():
+        try:
+            root.deiconify()
+            root.lift()
+            root.focus_force()
+            root.attributes("-topmost", True)
+            root.after(800, lambda: root.attributes("-topmost", False))
+        except tk.TclError:
+            pass  # not supported on this platform/WM — harmless
+    root.after(150, _surface)
     root.mainloop()
 
 
