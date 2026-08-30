@@ -140,43 +140,78 @@ def tool_env():
     return dict(os.environ, NO_COLOR="1", PYTHONPATH=pp)
 
 
-def resolve_esptool():
-    """Return a working esptool argv prefix, or None. Prefers the bundled
-    pure-python esptool in vendor/ (no install needed); falls back to a
-    system esptool. Tests by executing 'version' (a broken-shebang esptool.py
-    passes a presence check but fails to run)."""
-    bundled = os.path.join(VENDOR, "esptool.py")
+def _frozen():
+    """True inside a PyInstaller/py2app bundle — sys.executable is then the
+    frozen GUI itself, not a python, so tools must run via the --run-* re-exec
+    shim (see run_tool_mode) instead of spawning 'python vendor/tool.py'."""
+    return bool(getattr(sys, "frozen", False))
+
+
+def esptool_candidates():
+    """Ordered argv prefixes that might be a working esptool."""
     candidates = []
-    if os.path.isfile(bundled):
+    bundled = os.path.join(VENDOR, "esptool.py")
+    if _frozen():
+        candidates.append([sys.executable, "--run-esptool"])
+    elif os.path.isfile(bundled):
         candidates.append([sys.executable, bundled])
     candidates += [["esptool"], ["esptool.py"],
                    [sys.executable, "-m", "esptool"], ["python3", "-m", "esptool"]]
+    return candidates
+
+
+def nodemcu_candidates():
+    """Ordered argv prefixes that might be a working nodemcu-uploader."""
+    candidates = []
+    if _frozen():
+        candidates.append([sys.executable, "--run-nodemcu"])
+    elif os.path.isdir(os.path.join(VENDOR, "nodemcu_uploader")):
+        candidates.append([sys.executable, "-m", "nodemcu_uploader"])
+    candidates += [["nodemcu-uploader"], ["nodemcu-uploader.py"]]
+    return candidates
+
+
+def _resolve(candidates, probe_arg):
+    """First candidate that actually executes (a broken-shebang esptool.py
+    passes a presence check but fails to run), or None."""
     for cand in candidates:
         try:
-            if subprocess.run(cand + ["version"], capture_output=True,
+            if subprocess.run(cand + [probe_arg], capture_output=True,
                               env=tool_env()).returncode == 0:
                 return cand
         except (FileNotFoundError, OSError):
             continue
     return None
+
+
+def resolve_esptool():
+    """A working esptool argv prefix, or None. Prefers the bundled pure-python
+    esptool (no install needed); falls back to a system one."""
+    return _resolve(esptool_candidates(), "version")
 
 
 def resolve_nodemcu():
-    """Return a working nodemcu-uploader argv prefix, or None. Prefers the
-    bundled pure-python package in vendor/ (no install needed); falls back to a
-    system one. Tested by executing '--version' (mirrors resolve_esptool)."""
-    candidates = []
-    if os.path.isdir(os.path.join(VENDOR, "nodemcu_uploader")):
-        candidates.append([sys.executable, "-m", "nodemcu_uploader"])
-    candidates += [["nodemcu-uploader"], ["nodemcu-uploader.py"]]
-    for cand in candidates:
-        try:
-            if subprocess.run(cand + ["--version"], capture_output=True,
-                              env=tool_env()).returncode == 0:
-                return cand
-        except (FileNotFoundError, OSError):
-            continue
-    return None
+    """A working nodemcu-uploader argv prefix, or None (mirrors resolve_esptool)."""
+    return _resolve(nodemcu_candidates(), "--version")
+
+
+def run_tool_mode(argv):
+    """Worker mode for frozen bundles: 'BugZapper --run-esptool <args…>' runs
+    the bundled tool in-process and exits — a frozen app has no python3 to
+    spawn, but it can re-exec itself. Keeps _pump's subprocess streaming and
+    Cancel (terminate) working unchanged."""
+    tool, args = argv[0], argv[1:]
+    try:
+        if tool == "--run-esptool":
+            import esptool  # from the bundled vendor/ (on sys.path)
+            esptool.main(args)
+        else:  # --run-nodemcu
+            from nodemcu_uploader.main import main_func
+            sys.argv = ["nodemcu-uploader"] + args
+            main_func()
+    except SystemExit as e:
+        sys.exit(e.code if isinstance(e.code, int) else 0 if e.code is None else 1)
+    sys.exit(0)
 
 
 def nodemcu_upload_flags(compile_lc=False, dofile=False, restart=False,
@@ -1256,4 +1291,6 @@ def main():
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] in ("--run-esptool", "--run-nodemcu"):
+        run_tool_mode(sys.argv[1:])  # exits; never reaches the GUI
     main()

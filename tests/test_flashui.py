@@ -89,6 +89,49 @@ class TestHelpers(unittest.TestCase):
             self.assertEqual(base(flashui.files_in_folder(d, "")), sorted(names))
             self.assertNotIn("deep.lua", base(flashui.files_in_folder(d, "lua")))
 
+    def test_frozen_candidates_use_reexec_shim(self):
+        # In a frozen bundle sys.executable is the GUI itself — the tool
+        # candidates must switch to the --run-* re-exec shim and must NOT
+        # include 'python vendor/esptool.py' (which would spawn GUI copies).
+        try:
+            sys.frozen = True
+            esp = flashui.esptool_candidates()
+            nmu = flashui.nodemcu_candidates()
+            self.assertEqual(esp[0], [sys.executable, "--run-esptool"])
+            self.assertEqual(nmu[0], [sys.executable, "--run-nodemcu"])
+            self.assertNotIn([sys.executable, os.path.join(flashui.VENDOR, "esptool.py")], esp)
+        finally:
+            del sys.frozen
+        # unfrozen: bundled tools first, no shim
+        esp = flashui.esptool_candidates()
+        self.assertEqual(esp[0], [sys.executable,
+                                  os.path.join(flashui.VENDOR, "esptool.py")])
+        self.assertNotIn([sys.executable, "--run-esptool"], esp)
+
+    def test_run_tool_mode_esptool_version(self):
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            with self.assertRaises(SystemExit) as cm:
+                flashui.run_tool_mode(["--run-esptool", "version"])
+        self.assertEqual(cm.exception.code, 0)
+        self.assertIn("2.8", buf.getvalue())
+
+    def test_run_tool_mode_nodemcu_version(self):
+        import contextlib
+        import io
+        old_argv = sys.argv
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                with self.assertRaises(SystemExit) as cm:
+                    flashui.run_tool_mode(["--run-nodemcu", "--version"])
+            self.assertEqual(cm.exception.code, 0)
+            self.assertIn("nodemcu-uploader", buf.getvalue())
+        finally:
+            sys.argv = old_argv
+
     def test_parse_offset(self):
         self.assertEqual(flashui.parse_offset("0x1000"), "0x1000")
         self.assertEqual(flashui.parse_offset(" 4096 "), "4096")

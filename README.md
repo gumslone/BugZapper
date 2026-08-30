@@ -81,8 +81,19 @@ icon instead of the Python rocket (script-launched Tk apps can't change that).
 It still uses a system `python3` with Tk at runtime; nothing is compiled and
 no pip install is needed. Built locally it opens on double-click; if you give
 the app to someone else it's unsigned, so their first launch is right-click →
-Open. For a signed or fully self-contained bundle (Python included), reach for
-PyInstaller instead.
+Open.
+
+### Prebuilt standalone bundles (Releases)
+
+Tagging `v*` makes CI build fully self-contained bundles with PyInstaller
+(Python included — nothing to install at all) and attach them to the GitHub
+Release: a macOS `.app` zip, a Windows `.exe`, and a Linux binary
+(~11 MB each). They're unsigned: first launch is right-click → Open on macOS,
+"More info → Run anyway" past SmartScreen on Windows. Publish with:
+
+```sh
+git tag v1.1 && git push origin v1.1
+```
 
 ## Customize (no code edits)
 
