@@ -69,6 +69,21 @@ Requirements: `python3` on any of Windows / macOS / Linux. For the GUI you also
 need Tk — it ships with the python.org Windows/macOS installers; on Linux or
 Homebrew install it (`apt install python3-tk`, or `brew install python-tk@3.13`).
 
+### macOS: a double-clickable app
+
+```sh
+./make_app.sh                  # builds dist/BugZapper.app
+```
+
+The bundle carries its own copy of the flasher + `vendor/`, so drag it to
+/Applications or the Dock and launch from Finder — with a real BugZapper Dock
+icon instead of the Python rocket (script-launched Tk apps can't change that).
+It still uses a system `python3` with Tk at runtime; nothing is compiled and
+no pip install is needed. Built locally it opens on double-click; if you give
+the app to someone else it's unsigned, so their first launch is right-click →
+Open. For a signed or fully self-contained bundle (Python included), reach for
+PyInstaller instead.
+
 ## Customize (no code edits)
 
 | Env var | What | Default |
