@@ -22,9 +22,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # PyInstaller bundles are architecture-specific, so macOS needs both:
+        # an arm64 build for Apple Silicon and an x86_64 one for Intel Macs
+        # (Rosetta translates Intel->ARM, never ARM->Intel, so an arm64-only
+        # release simply cannot run on an Intel Mac).
         include:
-          - os: macos-latest
+          - os: macos-latest      # Apple Silicon (M1/M2/M3…)
             artifact: BugZapper-macos-arm64.zip
+          - os: macos-15-intel    # Intel Macs
+            artifact: BugZapper-macos-x64.zip
           - os: windows-latest
             artifact: BugZapper-windows-x64.exe
           - os: ubuntu-latest
@@ -60,6 +66,14 @@ jobs:
             --hidden-import esptool --collect-submodules nodemcu_uploader \
             --add-data "icon.png:." flashui.py
           dist/BugZapper.app/Contents/MacOS/BugZapper --run-esptool version
+          # the artifact name promises an architecture — verify the binary matches
+          got=$(lipo -archs dist/BugZapper.app/Contents/MacOS/BugZapper)
+          case "${{ matrix.artifact }}" in
+            *arm64*) want=arm64 ;;
+            *x64*)   want=x86_64 ;;
+          esac
+          echo "built: $got, expected: $want"
+          [ "$got" = "$want" ] || { echo "::error::arch mismatch: $got != $want"; exit 1; }
           ditto -c -k --keepParent dist/BugZapper.app "${{ matrix.artifact }}"
 
       - name: Build (Windows)
