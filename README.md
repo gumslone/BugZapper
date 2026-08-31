@@ -87,9 +87,20 @@ Open.
 
 Tagging `v*` makes CI build fully self-contained bundles with PyInstaller
 (Python included — nothing to install at all) and attach them to the GitHub
-Release: a macOS `.app` zip, a Windows `.exe`, and a Linux binary
-(~11 MB each). They're unsigned: first launch is right-click → Open on macOS,
-"More info → Run anyway" past SmartScreen on Windows. Publish with:
+Release:
+
+| Download | For |
+|---|---|
+| `BugZapper-macos-arm64.zip` | Apple Silicon Macs (M1/M2/M3…) |
+| `BugZapper-macos-x64.zip`   | Intel Macs |
+| `BugZapper-windows-x64.exe` | Windows 10/11 |
+| `BugZapper-linux-x64.tar.gz`| Linux (x86_64) |
+
+The two Mac builds are **not** interchangeable — Rosetta translates Intel→ARM
+but never ARM→Intel, so each Mac needs its own. On Apple Silicon: `uname -m`
+prints `arm64`; on Intel, `x86_64`. They're unsigned: first launch is
+right-click → Open on macOS, "More info → Run anyway" past SmartScreen on
+Windows. Publish with:
 
 ```sh
 git tag v1.1 && git push origin v1.1
