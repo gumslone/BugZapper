@@ -10,6 +10,19 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+def _close(root):
+    """Destroy a Tk root after flushing its idle queue. Tk 9.0 on macOS
+    segfaults when a root is destroyed before it ever processed idle events
+    and a later root then runs update_idletasks() — reproducible with plain
+    ttk widgets, no BugZapper code involved. Production creates one root, so
+    only this create-many-roots test suite is exposed."""
+    try:
+        root.update_idletasks()
+    except Exception:
+        pass
+    root.destroy()
+
+
 try:
     import flashui
     IMPORT_ERR = None
@@ -24,7 +37,7 @@ def _has_display():
     try:
         import tkinter as tk
         r = tk.Tk()
-        r.destroy()
+        _close(r)
         return True
     except Exception:
         return False
@@ -257,11 +270,11 @@ class TestGuiSmoke(unittest.TestCase):
         app = flashui.FlasherApp(root)
         root.update_idletasks()
         self.assertIsNone(app.monitor_ser)
-        self.assertEqual(len(app.action_btns), 6)
+        self.assertEqual(len(app.action_btns), 7)
         for attr in ("lua_files", "upload_btn", "flash_btn", "monitor_btn",
-                     "chipinfo_btn", "nm_cancel_btn"):
+                     "chipinfo_btn", "nm_cancel_btn", "erase_btn"):
             self.assertTrue(hasattr(app, attr))
-        root.destroy()
+        _close(root)
 
     def test_add_remove_flash_parts(self):
         import os
@@ -309,7 +322,33 @@ class TestGuiSmoke(unittest.TestCase):
                 msgs.append(app.q.get_nowait())
             self.assertTrue(any("hint:" in m and "0x1000" in m for m in msgs))
             self.assertEqual(app._parts, [("0x0", bl)])
-        root.destroy()
+        _close(root)
+
+    def test_erase_only_guards(self):
+        import tkinter as tk
+        from unittest import mock
+        root = tk.Tk()
+        app = flashui.FlasherApp(root)
+        drain = lambda: [app.q.get_nowait() for _ in range(app.q.qsize())]
+        drain()
+        # no port: refuse, never asks, never goes busy
+        app.port.set("")
+        with mock.patch.object(flashui.messagebox, "askyesno") as ask:
+            app._erase_only()
+            ask.assert_not_called()
+        self.assertFalse(app.busy)
+        self.assertTrue(any("no serial port" in m for m in drain()))
+        # user declines the confirmation: nothing starts
+        app.port["values"] = ("/dev/fake",)
+        app.port.set("/dev/fake")
+        with mock.patch.object(flashui.messagebox, "askyesno",
+                               return_value=False) as ask, \
+             mock.patch.object(flashui.threading, "Thread") as thread:
+            app._erase_only()
+            ask.assert_called_once()
+            thread.assert_not_called()
+        self.assertFalse(app.busy)
+        _close(root)
 
     def test_cancel_lifecycle_covers_both_buttons(self):
         import tkinter as tk
@@ -338,7 +377,7 @@ class TestGuiSmoke(unittest.TestCase):
         app._end_tool()
         self.assertFalse(app._can_cancel)
         self.assertEqual(states(), ["disabled", "disabled"])
-        root.destroy()
+        _close(root)
 
     def test_settings_restore_and_save(self):
         import json
@@ -362,6 +401,7 @@ class TestGuiSmoke(unittest.TestCase):
                 self.assertEqual(app.lua_verify.get(), "sha1")
                 # closing writes the current values back
                 app.baud.set("9600")
+                root.update_idletasks()  # see _close()
                 app._on_close()  # also destroys root
                 saved = json.load(open(path))
                 self.assertEqual(saved["baud"], "9600")
@@ -401,7 +441,7 @@ class TestGuiSmoke(unittest.TestCase):
             self.assertIn("offset 0x1000", app.adv_btn["text"])
             app._clear_parts()
             self.assertNotIn("part", app.adv_btn["text"])
-        root.destroy()
+        _close(root)
 
     def test_lua_add_paths_dedupes_and_skips_non_files(self):
         import os
@@ -418,7 +458,7 @@ class TestGuiSmoke(unittest.TestCase):
             # f1 twice (dupe), a real file, a directory, a missing path.
             app._lua_add_paths([f1, f1, f2, d, missing])
             got = list(app.lua_files.get(0, "end"))
-        root.destroy()
+        _close(root)
         self.assertEqual(got, [f1, f2])  # deduped; dir + missing skipped
 
 

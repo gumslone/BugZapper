@@ -14,6 +14,7 @@ vendor/, so nothing needs installing.
                    -f 0x10000:app.bin   # ESP32: multi-part image at offsets
   python3 flash.py --scan build/        # ESP32: scan a build folder & flash it
   python3 flash.py -i                   # chip info (type, MAC, flash size)
+  python3 flash.py --erase-only         # wipe the whole chip, write nothing
 """
 import argparse
 import glob
@@ -175,10 +176,16 @@ def main():
                          "parts (bootloader/partitions/boot_app0 + the app)")
     ap.add_argument("-i", "--chip-info", action="store_true",
                     help="probe the chip (type, MAC, flash size) and exit")
+    ap.add_argument("--erase-only", action="store_true",
+                    help="erase the whole flash chip and exit, writing no "
+                         "firmware (wipes settings and Wi-Fi credentials)")
     args = ap.parse_args()
 
     if args.scan and args.file:
         ap.error("--scan and -f are mutually exclusive")
+    if args.erase_only and (args.file or args.scan or args.chip_info):
+        ap.error("--erase-only writes nothing; it can't be combined with "
+                 "-f, --scan or -i")
 
     ports = list_ports()
     if args.list:
@@ -206,6 +213,16 @@ def main():
         return subprocess.run(esptool + ["--port", port, "--baud",
                                          str(args.baud), "flash_id"],
                               env=tool_env()).returncode
+
+    if args.erase_only:
+        # explicit long flag = the confirmation; no prompt, so it scripts
+        print(f"==> Erasing the entire flash on {port}")
+        rc = subprocess.run(esptool + ["--port", port, "--baud",
+                                       str(args.baud), "erase_flash"],
+                            env=tool_env()).returncode
+        if rc == 0:
+            print("==> Flash erased. Flash new firmware to bring the board back.")
+        return rc
 
     if args.scan:
         parts, leftovers = scan_esp32_folder(args.scan)

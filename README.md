@@ -17,8 +17,12 @@ shows the serial output in one place, so you don't need separate
   After a flash it
   reopens the monitor to show the boot log — so no "port busy" clash. **Chip
   info** probes the connected board (chip type, MAC, flash size — handy before
-  choosing an image). **Cancel**
-  aborts a flash, chip probe or NodeMCU operation while it's still safe (e.g.
+  choosing an image). **Erase only…** wipes the whole chip without writing
+  any firmware (no `.bin` needed) — to blank a board, clear stored settings
+  and Wi-Fi credentials, or recover one that crashes on boot; it asks first.
+  The "Erase flash" checkbox, by contrast, erases *then* writes the selected
+  firmware. **Cancel**
+  aborts a flash, erase, chip probe or NodeMCU operation while it's still safe (e.g.
   stuck at "Connecting…" on the wrong port); it locks out the moment writing
   starts — a flash locks at chip detection, an upload at file transfer — so you
   can't corrupt anything mid-write.
@@ -61,8 +65,9 @@ python3 flash.py -f 0x1000:boot.bin -f 0x8000:partitions.bin -f 0x10000:app.bin
                                # ESP32 multi-part image (repeat -f with offsets)
 python3 flash.py --scan build/ # ESP32: scan a build folder and flash its parts
 python3 flash.py -i            # chip info: type, MAC, flash size
+python3 flash.py --erase-only  # wipe the whole chip, write nothing (no .bin needed)
 python3 flash.py -h            # all options
-./flash.sh                     # macOS / Linux bash twin (has -i; no --scan)
+./flash.sh                     # macOS / Linux bash twin (has -i, -E erase-only; no --scan)
 ```
 
 Requirements: `python3` on any of Windows / macOS / Linux. For the GUI you also

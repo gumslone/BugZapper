@@ -16,6 +16,7 @@ set -euo pipefail
 #   -e         erase the whole flash before writing ("yes, wipes all data")
 #   -l         list detected serial ports and exit
 #   -i         probe the chip (type, MAC, flash size) and exit
+#   -E         erase the whole flash chip and exit, writing no firmware
 #   -h         show this help
 #
 # Examples:
@@ -38,6 +39,7 @@ BAUD=115200
 FLASH_MODE=dio
 ERASE=0
 CHIP_INFO=0
+ERASE_ONLY=0
 
 # Lists likely USB-serial devices on macOS (cu.usbserial*, cu.SLAB*, cu.wchusb*)
 # and Linux (ttyUSB*, ttyACM*).
@@ -46,7 +48,7 @@ list_ports() {
      /dev/ttyUSB* /dev/ttyACM* 2>/dev/null || true
 }
 
-while getopts ":p:f:b:m:eilh" opt; do
+while getopts ":p:f:b:m:eiElh" opt; do
   case "$opt" in
     p) PORT="$OPTARG" ;;
     f) PARTS+=("$OPTARG") ;;
@@ -54,8 +56,9 @@ while getopts ":p:f:b:m:eilh" opt; do
     m) FLASH_MODE="$OPTARG" ;;
     e) ERASE=1 ;;
     i) CHIP_INFO=1 ;;
+    E) ERASE_ONLY=1 ;;
     l) list_ports; exit 0 ;;
-    h) sed -n '4,31p' "$0"; exit 0 ;;
+    h) sed -n '4,32p' "$0"; exit 0 ;;
     :) echo "Error: -$OPTARG needs an argument" >&2; exit 1 ;;
     \?) echo "Error: unknown option -$OPTARG (try -h)" >&2; exit 1 ;;
   esac
@@ -102,6 +105,16 @@ fi
 # Read-only chip probe (type, MAC, flash size) — needs no firmware.
 if [ "$CHIP_INFO" = 1 ]; then
   exec "${ESPTOOL[@]}" --port "$PORT" --baud "$BAUD" flash_id
+fi
+
+# Erase only: wipe the whole chip, write nothing — needs no firmware.
+if [ "$ERASE_ONLY" = 1 ]; then
+  if [ ${#PARTS[@]} -gt 0 ]; then
+    echo "Error: -E writes nothing; don't combine it with -f." >&2
+    exit 1
+  fi
+  echo "==> Erasing the entire flash on $PORT"
+  exec "${ESPTOOL[@]}" --port "$PORT" --baud "$BAUD" erase_flash
 fi
 
 # Default firmware: the first .bin in ./firmware (of the current project).

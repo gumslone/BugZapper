@@ -93,6 +93,12 @@ class TestFlashCli(unittest.TestCase):
         self.assertEqual(r.returncode, 2)  # argparse usage error
         self.assertIn("mutually exclusive", r.stderr)
 
+    def test_erase_only_rejects_firmware_args(self):
+        for extra in (["-f", "a.bin"], ["--scan", "x"], ["-i"]):
+            r = _run("--erase-only", *extra)
+            self.assertEqual(r.returncode, 2, extra)  # argparse usage error
+            self.assertIn("--erase-only writes nothing", r.stderr)
+
     def test_scan_empty_folder_errors(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:

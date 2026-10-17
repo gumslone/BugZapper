@@ -257,7 +257,7 @@ class FlasherApp:
         # Action buttons disabled while an external tool (esptool / uploader) runs.
         self.action_btns = [self.flash_btn, self.monitor_btn, self.upload_btn,
                             self.lualist_btn, self.luaformat_btn,
-                            self.chipinfo_btn]
+                            self.chipinfo_btn, self.erase_btn]
         # One ✕ Cancel per tab, armed/locked/disarmed together.
         self.cancel_btns = [self.cancel_btn, self.nm_cancel_btn]
         self._refresh_ports(select_first=True)
@@ -346,6 +346,12 @@ class FlasherApp:
         self.cancel_btn = ttk.Button(btns, text="✕ Cancel", command=self._cancel,
                                      state="disabled")
         self.cancel_btn.pack(side="left", padx=6)
+        # Wipe the chip without writing anything (no firmware file needed):
+        # resetting a board to blank, clearing stored Wi-Fi credentials and
+        # settings, or recovering a board that crashes during boot.
+        self.erase_btn = ttk.Button(btns, text="Erase only…",
+                                    command=self._erase_only)
+        self.erase_btn.pack(side="left")
         # ESP8266 users never need offsets — everything ESP32/multi-part lives
         # behind this disclosure, collapsed by default so the simple flow stays
         # a two-click affair. The label summarizes hidden non-default state.
@@ -1149,6 +1155,64 @@ class FlasherApp:
             self._emit(f"\n! flash failed (exit {rc}). "
                        "Free the port (close CoolTerm) and retry.\n")
             self._set_status("flash failed", "#d9534f")
+
+    # ---- erase only ---------------------------------------------------------
+    def _erase_only(self):
+        """Erase the whole flash chip (esptool erase_flash) without writing any
+        firmware. Destructive, so it always asks first; cancellable while
+        esptool is still connecting, exactly like Flash."""
+        if self.busy:
+            return
+        port = self.port.get()
+        if not port:
+            self._emit("! no serial port selected\n")
+            return
+        if not messagebox.askyesno(
+                "Erase flash",
+                f"Erase the ENTIRE flash on {port}?\n\n"
+                "This removes the firmware, stored settings and Wi-Fi "
+                "credentials. The board won't run anything until you flash "
+                "new firmware. This cannot be undone.",
+                icon="warning", default="no"):
+            return
+        reconnect = self._begin_tool("connecting…")
+        self._arm_cancel("erase cancelled while connecting (device not touched)")
+        threading.Thread(target=self._run_erase,
+                         args=(port, self.baud.get(), reconnect),
+                         daemon=True).start()
+
+    def _run_erase(self, port, baud, reconnect):
+        rc = 1
+        try:
+            esptool = resolve_esptool()
+            if not esptool:
+                self._emit("! no working esptool found. Install: brew install esptool\n")
+            else:
+                cmd = esptool + ["--port", port, "--baud", baud, "erase_flash"]
+                self._emit("\n==> Erasing flash on %s\n    %s\n" % (port, " ".join(cmd)))
+                # Same safe cutoff as flashing: once the chip answers, erasing
+                # is imminent and must not be interrupted.
+                rc = self._pump(
+                    cmd, uncancel_marker="Chip is",
+                    on_uncancellable=lambda: self._lock_cancel("erasing…"))
+        except Exception as e:  # never leave the UI stuck busy
+            self._emit(f"\n! error: {e}\n")
+        self.root.after(0, self._erase_done, rc, reconnect)
+
+    def _erase_done(self, rc, reconnect):
+        self._end_tool()
+        if self._op_cancelled:
+            self._set_status("cancelled", "#d9534f")
+        elif rc == 0:
+            self._emit("\n==> Flash erased. The board has no firmware now — "
+                       "flash an image to bring it back.\n")
+            self._set_status("erased ✓", "#1FA67A")
+        else:
+            self._emit(f"\n! erase failed (exit {rc}). Is the board in "
+                       "bootloader mode and the port free?\n")
+            self._set_status("erase failed", "#d9534f")
+        if reconnect:
+            self._start_monitor()  # restore what the user had open
 
     # ---- NodeMCU Lua upload (optional tab) ----------------------------------
     def _run_nodemcu(self, subcmd, intro, status,
